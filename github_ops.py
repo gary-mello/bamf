@@ -202,6 +202,136 @@ def create_repo(client: Github) -> None:
         print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
 
 
+def clone_private_to_public(client: Github, token: str) -> None:
+    """Select a private repo, clone its full history to a new public repo under the same account."""
+    print(f"\n{cyan}Clone Private to Public{reset}\n")
+
+    if not shutil.which("git"):
+        print(f"\n  {err('git was not found on your PATH. Please install git and try again.')}\n")
+        return
+
+    # --- Fetch private repos ---
+    try:
+        all_repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    private_repos = [r for r in all_repos if r.private]
+
+    if not private_repos:
+        print(f"\n  {warn('No private repositories found.')}\n")
+        return
+
+    # --- Display private repos ---
+    print(f"  {dim}{'#':<4}{'Repository':<40}{'Language':<20}{'Last pushed'}{reset}")
+    print(f"  {dim}{'─' * 70}{reset}")
+    for i, repo in enumerate(private_repos, start=1):
+        lang = repo.language or ""
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "—"
+        print(f"  {dim}{i:<4}{reset}{bold}{repo.full_name:<40}{reset}{cyan}{lang:<20}{reset}{dim}{pushed}{reset}")
+
+    print()
+    raw = input(f"  {bold}Select repo number{reset} {dim}(or 0 to cancel):{reset} ").strip()
+    if not raw.isdigit():
+        print(f"\n  {err('Invalid input. Enter a number.')}\n")
+        return
+    choice = int(raw)
+    if choice == 0:
+        print(f"\n  {muted('Cancelled.')}\n")
+        return
+    if choice < 1 or choice > len(private_repos):
+        print(f"\n  {err(f'Selection out of range. Enter 1–{len(private_repos)}.')}\n")
+        return
+
+    source_repo = private_repos[choice - 1]
+
+    # --- Prompt for new repo name ---
+    print()
+    while True:
+        default_name = source_repo.name + "-public"
+        raw_name = input(f"  {bold}New public repo name{reset} {dim}[{default_name}]:{reset} ").strip()
+        new_name = raw_name if raw_name else default_name
+        if " " in new_name:
+            print(f"  {err('Name cannot contain spaces (use hyphens or underscores). Please try again.')}")
+            continue
+        if not new_name:
+            print(f"  {err('Name cannot be empty. Please try again.')}")
+            continue
+        break
+
+    # --- Create the new public repo ---
+    user = client.get_user()
+    print(f"\n  {dim}Creating public repo {cyan}{user.login}/{new_name}{reset}{dim}...{reset}")
+    try:
+        new_repo = user.create_repo(
+            new_name,
+            private=False,
+            description=source_repo.description or "",
+            auto_init=False,
+        )
+    except GithubException as exc:
+        if exc.status == 422:
+            errors = exc.data.get("errors", [])
+            msg = errors[0].get("message", "invalid name or repo already exists") if errors else "invalid name or repo already exists"
+            print(f"\n  {err(f'Could not create repo: {msg}')}\n")
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    # --- Mirror clone source → push to new repo ---
+    owner = source_repo.owner.login
+    src_url = f"https://x-access-token:{token}@github.com/{owner}/{source_repo.name}.git"
+    dst_url = f"https://x-access-token:{token}@github.com/{user.login}/{new_name}.git"
+
+    tmp_dir = tempfile.mkdtemp(prefix="bamf_mirror_")
+    try:
+        print(f"  {dim}Cloning {bold}{source_repo.full_name}{reset}{dim} (mirror)...{reset}")
+        clone_result = subprocess.run(
+            ["git", "clone", "--mirror", src_url, tmp_dir],
+            capture_output=True,
+            text=True,
+        )
+        if clone_result.returncode != 0:
+            clone_err = clone_result.stderr.strip().splitlines()[-1] if clone_result.stderr.strip() else "unknown error"
+            print(f"\n  {err(f'Clone failed: {clone_err}')}")
+            print(f"  {dim}Cleaning up created repo...{reset}")
+            try:
+                new_repo.delete()
+            except GithubException:
+                pass
+            print()
+            return
+
+        print(f"  {dim}Pushing to {cyan}{user.login}/{new_name}{reset}{dim}...{reset}")
+        push_result = subprocess.run(
+            ["git", "-C", tmp_dir, "push", "--mirror", dst_url],
+            capture_output=True,
+            text=True,
+        )
+        if push_result.returncode != 0:
+            push_err = push_result.stderr.strip().splitlines()[-1] if push_result.stderr.strip() else "unknown error"
+            print(f"\n  {err(f'Push failed: {push_err}')}\n")
+            return
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    print(f"\n  {success('Repository cloned and published successfully!')}")
+    print(f"  {lbl('Source:     ')} {dim}{source_repo.full_name}{reset}  {yellow}(private){reset}")
+    print(f"  {lbl('Destination:')} {bold}{new_repo.full_name}{reset}  {green}(public){reset}")
+    print(f"  {lbl('Clone URL:  ')} {dim}{new_repo.clone_url}{reset}")
+    print(f"  {lbl('Web URL:    ')} {dim}{new_repo.html_url}{reset}\n")
+
+
 def search_build_files(client: Github) -> None:
     """Scan all accessible repos for build/CI files and report findings."""
 
