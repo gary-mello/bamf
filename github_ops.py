@@ -637,6 +637,164 @@ def list_unprotected_repos(client: Github) -> None:
     )
 
 
+def search_manifest_files(client: Github) -> None:
+    """Scan all accessible repos for dependency manifest and lock files and report findings."""
+
+    MANIFEST_FILES: dict[str, str] = {
+        # JavaScript / Node
+        "package.json":           "npm / Node.js",
+        "package-lock.json":      "npm (lockfile)",
+        "yarn.lock":              "Yarn (lockfile)",
+        "pnpm-lock.yaml":         "pnpm (lockfile)",
+        ".npmrc":                 "npm config",
+        ".nvmrc":                 "Node version pin",
+        ".node-version":          "Node version pin",
+        # Python
+        "requirements.txt":       "pip",
+        "requirements-dev.txt":   "pip (dev)",
+        "Pipfile":                "Pipenv",
+        "Pipfile.lock":           "Pipenv (lockfile)",
+        "pyproject.toml":         "Python PEP 517",
+        "poetry.lock":            "Poetry (lockfile)",
+        "setup.py":               "setuptools",
+        "setup.cfg":              "setuptools (cfg)",
+        ".python-version":        "Python version pin",
+        # Ruby
+        "Gemfile":                "Bundler (Ruby)",
+        "Gemfile.lock":           "Bundler (lockfile)",
+        ".ruby-version":          "Ruby version pin",
+        # Go
+        "go.mod":                 "Go Modules",
+        "go.sum":                 "Go Modules (checksum)",
+        # Rust
+        "Cargo.toml":             "Cargo (Rust)",
+        "Cargo.lock":             "Cargo (lockfile)",
+        # Java / JVM
+        "pom.xml":                "Maven",
+        "build.gradle":           "Gradle",
+        "build.gradle.kts":       "Gradle (Kotlin DSL)",
+        "gradle.properties":      "Gradle properties",
+        # PHP
+        "composer.json":          "Composer (PHP)",
+        "composer.lock":          "Composer (lockfile)",
+        # .NET / C#
+        "packages.config":        "NuGet (legacy)",
+        "global.json":            ".NET SDK version pin",
+        # Swift / Apple
+        "Package.swift":          "Swift Package Manager",
+        "Package.resolved":       "Swift PM (lockfile)",
+        # Dart / Flutter
+        "pubspec.yaml":           "pub (Dart/Flutter)",
+        "pubspec.lock":           "pub (lockfile)",
+        # Elixir
+        "mix.exs":                "Mix (Elixir)",
+        "mix.lock":               "Mix (lockfile)",
+        # Haskell
+        "cabal.project":          "Cabal (Haskell)",
+        "stack.yaml":             "Stack (Haskell)",
+        # Terraform / Infra
+        ".terraform.lock.hcl":    "Terraform provider lock",
+    }
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Scanning {bold}{total}{reset}{cyan} repo(s) for dependency manifest files...{reset}\n")
+
+    hits = 0
+    total_files_found = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            root_contents = repo.get_contents("")
+        except GithubException:
+            continue
+
+        root_names = {item.name: item for item in (root_contents if isinstance(root_contents, list) else [root_contents])}
+
+        found_files: list[tuple[str, str, int]] = []  # (filename, label, size_bytes)
+        for filename, label in MANIFEST_FILES.items():
+            if filename in root_names:
+                item = root_names[filename]
+                found_files.append((filename, label, item.size))
+
+        if not found_files:
+            continue
+
+        hits += 1
+        total_files_found += len(found_files)
+        print(" " * 60, end="\r")
+
+        perms = repo.permissions
+        if perms is None:
+            access = "unknown"
+        elif perms.admin:
+            access = "admin"
+        elif perms.push:
+            access = "write"
+        elif perms.pull:
+            access = "read"
+        else:
+            access = "none"
+
+        access_colored = (
+            f"{red}admin{reset}" if access == "admin" else
+            f"{yellow}write{reset}" if access == "write" else
+            f"{green}read{reset}" if access == "read" else
+            f"{dim}{access}{reset}"
+        )
+
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
+        fork_tag = f"  {yellow}[fork]{reset}" if repo.fork else ""
+        vis_colored = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        stars = f"★ {repo.stargazers_count}" if repo.stargazers_count else "★ 0"
+
+        # Group files by ecosystem for a cleaner display
+        ecosystems: dict[str, list[tuple[str, int]]] = {}
+        for filename, label, size in found_files:
+            ecosystem = label.split(" (")[0].split(" /")[0].strip()
+            ecosystems.setdefault(ecosystem, []).append((filename, size))
+
+        print(f"  {bold}{white}{repo.full_name}{reset}{fork_tag}")
+        print(f"    {lbl('URL:       ')}  {dim}{repo.html_url}{reset}")
+        print(f"    {lbl('Visibility:')}  {vis_colored}   {dim}|{reset}   {lbl('Access:')} {access_colored}   {dim}|{reset}   {lbl('Branch:')} {cyan}{repo.default_branch}{reset}")
+        print(f"    {lbl('Language:  ')}  {cyan}{repo.language or '-':<20}{reset}  {yellow}{stars}{reset}   {dim}|{reset}   {lbl('Last push:')} {dim}{pushed}{reset}")
+        print(f"    {lbl('Manifests: ')}  {dim}{len(found_files)} file{'s' if len(found_files) != 1 else ''} found{reset}")
+
+        for filename, label, size in sorted(found_files, key=lambda x: x[0]):
+            is_lock = "lock" in label.lower() or filename.endswith(".lock") or filename.endswith(".resolved")
+            file_color = dim if is_lock else cyan
+            size_str = f"{size:,} B" if size < 1024 else f"{size // 1024:,} KB"
+            lock_badge = f"  {dim}[lock]{reset}" if is_lock else ""
+            print(f"      {file_color}{filename:<35}{reset}  {dim}{label:<30}{reset}  {dim}{size_str:>8}{reset}{lock_badge}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if hits == 0:
+        print(f"  {warn('No manifest files found in any accessible repository.')}\n")
+    else:
+        print(
+            f"  {success(f'Found {total_files_found} manifest file{chr(115) if total_files_found != 1 else str()} '
+                         f'across {hits} of {total} repo(s).')}\n"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
