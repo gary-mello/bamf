@@ -8,6 +8,7 @@ Add new menu options here by importing an operation from github_ops
 and calling register_option() before run_menu_loop().
 """
 
+import argparse
 import os
 import sys
 
@@ -17,7 +18,12 @@ from menu import register_option, run_menu_loop
 
 
 def main() -> None:
-    client, token = get_github_client()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--token", metavar="PAT", default=None,
+                        help="GitHub Personal Access Token (skips interactive prompt)")
+    args, _ = parser.parse_known_args()
+
+    client, token = get_github_client(token=args.token)
     os.system("cls" if os.name == "nt" else "clear")
 
     # Register menu options — order determines numbering.

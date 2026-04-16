@@ -8,6 +8,9 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Clone all repos** — Bulk clone every repo to a local directory
 - **Create a repo** — Interactively create a new GitHub repository
 - **Search for build files** — Scan repos for build/CI configs across 26 build systems
+- **Show PAT info** — Display scopes and metadata for the active token
+- **Search for Actions files** — Find GitHub Actions workflow files across repos
+- **Repos without branch protection** — Identify repos missing branch protection rules
 
 ## Setup
 
@@ -18,11 +21,21 @@ python main.py
 
 ## Authentication
 
-You will be prompted for a GitHub Personal Access Token on launch. Generate one at:
+On launch, bamf prompts for a GitHub Personal Access Token (input is hidden). Generate one at:
 https://github.com/settings/tokens
 
 - **Classic PAT**: needs `repo` scope for private repo access
 - **Fine-Grained PAT**: grant read/write access to specific repos
+
+### Skip the prompt with `--token`
+
+Pass your PAT directly as a flag to bypass the interactive prompt:
+
+```bash
+python main.py --token ghp_yourTokenHere
+```
+
+This is useful for scripting or CI environments. If the token is invalid, bamf exits immediately with an error.
 
 ## Adding a New Menu Option
 

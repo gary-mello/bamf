@@ -21,16 +21,41 @@ from colors import bold, cyan, green, red, yellow, reset, dim
 MAX_RETRIES = 3
 
 
-def get_github_client() -> tuple[Github, str]:
-    """Prompt for a GitHub PAT, verify it, and return (Github client, raw token).
+def get_github_client(token: str | None = None) -> tuple[Github, str]:
+    """Prompt for a GitHub PAT (or use a provided one), verify it, and return (Github client, raw token).
+
+    If *token* is supplied (e.g. from --token CLI flag) the interactive prompt is skipped
+    and the token is validated immediately with no retries.
 
     The raw token is returned so callers can use it for authenticated git operations
     (e.g. embedding it in an HTTPS clone URL).
 
-    Retries up to MAX_RETRIES times on bad credentials.
+    Retries up to MAX_RETRIES times on bad credentials (interactive mode only).
     Exits with code 1 after exhausting retries or on unrecoverable errors.
     """
     bar = f"{bold}{cyan}{'═' * 42}{reset}"
+
+    # ── Non-interactive: token supplied via flag ─────────────────────────────
+    if token:
+        print(bar)
+        print(f"{bold}{cyan}{'  bamf — Authentication':^42}{reset}")
+        print(bar)
+        try:
+            client = Github(token)
+            login = client.get_user().login
+            print(f"\n  {green}{bold}Authenticated as: {login}{reset}\n")
+            return client, token
+        except GithubException as exc:
+            if exc.status == 401:
+                print(f"  {red}Bad credentials in --token flag. Exiting.{reset}")
+            else:
+                print(f"  {red}GitHub error ({exc.status}): {exc.data.get('message', str(exc))}{reset}")
+            sys.exit(1)
+        except requests.exceptions.ConnectionError:
+            print(f"  {red}Cannot reach GitHub. Check your network connection and try again.{reset}")
+            sys.exit(1)
+
+    # ── Interactive: prompt for token ────────────────────────────────────────
     print(bar)
     print(f"{bold}{cyan}{'  bamf — Authentication':^42}{reset}")
     print(bar)
