@@ -4,17 +4,14 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 
 ## Features
 
+### RECON
+
 - **List all repos** — View all accessible repos sorted by most recently updated
-- **Clone all repos** — Bulk clone every repo to a local directory
-- **Clone private to public** — Select a private repo, mirror its full history to a new public repo under the same account
-- **Create a repo** — Interactively create a new GitHub repository
-- **Search for build files** — Scan repos for build/CI configs across 26 build systems
 - **Show PAT info** — Display scopes and metadata for the active token
+- **Search for build files** — Scan repos for build/CI configs across 26 build systems
 - **Search for Actions files** — Find GitHub Actions workflow files across repos
-- **Repos without branch protection** — Identify repos missing branch protection rules
 - **Search for manifest files** — Detect dependency manifests and lockfiles across 40+ ecosystems
-- **Edit a manifest file** — Select a repo, view a manifest file, edit it in `$EDITOR`, review the diff, and commit changes back to GitHub
-- **Scan repos for secrets** — Detect leaked secrets (API keys, tokens, credentials) across all repos using [gitleaks](https://github.com/gitleaks/gitleaks)
+- **Repos without branch protection** — Identify repos missing branch protection rules
 - **Security posture audit** — Check whether Dependabot alerts, secret scanning, and push protection are enabled on each repo
 - **Dependabot vulnerability alerts** — List open CVE alerts by severity (critical/high/medium/low) across all repos
 - **Branch protection deep-dive** — Inspect detailed branch protection rules and flag dangerous configs (force push allowed, 0 required reviewers, admins exempt, etc.)
@@ -22,6 +19,17 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Collaborator access audit** — List outside collaborators and pending invitations, flagging admin/write access and stale invites
 - **Deploy keys audit** — List all deploy keys, flagging read/write keys and ones that have never been used
 - **Actions secrets audit** — Surface GitHub Actions secret names (values are never exposed) and flag secrets not rotated in over a year
+- **Scan repos for secrets** — Detect leaked secrets (API keys, tokens, credentials) across all repos using [gitleaks](https://github.com/gitleaks/gitleaks)
+
+### PWN
+
+- **Clone all repos** — Bulk clone every repo to a local directory
+- **Clone private to public** — Select a private repo, mirror its full history to a new public repo under the same account
+- **Create a repo** — Interactively create a new GitHub repository
+- **Edit a manifest file** — Select a repo, view a manifest file, edit it in `$EDITOR`, review the diff, and commit changes back to GitHub
+- **Nuke branch protections** — Select a repo and branch, then remove all branch protection rules
+- **Nuke a repo** — Permanently delete a repository (requires confirmation)
+- **Add collaborator** — Select a repo, enter a GitHub username, and add them as a push-level collaborator
 
 > **Note:** Security audit features (Dependabot alerts, security posture, collaborators, webhooks, deploy keys, Actions secrets) require **admin access** to each repo. Repos where the PAT lacks sufficient permissions are silently skipped.
 
