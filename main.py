@@ -27,6 +27,7 @@ from github_ops import (
     list_dependabot_alerts,
     list_repos,
     list_unprotected_repos,
+    nuke_repo,
     scan_secrets,
     search_actions_files,
     search_build_files,
@@ -65,6 +66,7 @@ def main() -> None:
     register_option("Collaborator access audit",       lambda: audit_collaborators(client))
     register_option("Deploy keys audit",               lambda: audit_deploy_keys(client))
     register_option("Actions secrets audit",           lambda: audit_actions_secrets(client))
+    register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client))
     register_option("Exit", None)
 
     run_menu_loop()
