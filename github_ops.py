@@ -5,6 +5,7 @@ Each function accepts an authenticated Github client as its first argument
 and prints results directly to the terminal.
 """
 
+import difflib
 import json
 import os
 import shutil
@@ -795,6 +796,291 @@ def search_manifest_files(client: Github) -> None:
             f"  {success(f'Found {total_files_found} manifest file{chr(115) if total_files_found != 1 else str()} '
                          f'across {hits} of {total} repo(s).')}\n"
         )
+
+
+def edit_manifest_file(client: Github) -> None:
+    """Select a repo, pick a manifest file, edit it in $EDITOR, and commit changes to GitHub."""
+
+    MANIFEST_FILES: dict[str, str] = {
+        # JavaScript / Node
+        "package.json":           "npm / Node.js",
+        "package-lock.json":      "npm (lockfile)",
+        "yarn.lock":              "Yarn (lockfile)",
+        "pnpm-lock.yaml":         "pnpm (lockfile)",
+        ".npmrc":                 "npm config",
+        ".nvmrc":                 "Node version pin",
+        ".node-version":          "Node version pin",
+        # Python
+        "requirements.txt":       "pip",
+        "requirements-dev.txt":   "pip (dev)",
+        "Pipfile":                "Pipenv",
+        "Pipfile.lock":           "Pipenv (lockfile)",
+        "pyproject.toml":         "Python PEP 517",
+        "poetry.lock":            "Poetry (lockfile)",
+        "setup.py":               "setuptools",
+        "setup.cfg":              "setuptools (cfg)",
+        ".python-version":        "Python version pin",
+        # Ruby
+        "Gemfile":                "Bundler (Ruby)",
+        "Gemfile.lock":           "Bundler (lockfile)",
+        ".ruby-version":          "Ruby version pin",
+        # Go
+        "go.mod":                 "Go Modules",
+        "go.sum":                 "Go Modules (checksum)",
+        # Rust
+        "Cargo.toml":             "Cargo (Rust)",
+        "Cargo.lock":             "Cargo (lockfile)",
+        # Java / JVM
+        "pom.xml":                "Maven",
+        "build.gradle":           "Gradle",
+        "build.gradle.kts":       "Gradle (Kotlin DSL)",
+        "gradle.properties":      "Gradle properties",
+        # PHP
+        "composer.json":          "Composer (PHP)",
+        "composer.lock":          "Composer (lockfile)",
+        # .NET / C#
+        "packages.config":        "NuGet (legacy)",
+        "global.json":            ".NET SDK version pin",
+        # Swift / Apple
+        "Package.swift":          "Swift Package Manager",
+        "Package.resolved":       "Swift PM (lockfile)",
+        # Dart / Flutter
+        "pubspec.yaml":           "pub (Dart/Flutter)",
+        "pubspec.lock":           "pub (lockfile)",
+        # Elixir
+        "mix.exs":                "Mix (Elixir)",
+        "mix.lock":               "Mix (lockfile)",
+        # Haskell
+        "cabal.project":          "Cabal (Haskell)",
+        "stack.yaml":             "Stack (Haskell)",
+        # Terraform / Infra
+        ".terraform.lock.hcl":    "Terraform provider lock",
+    }
+
+    print(f"\n{cyan}Edit Manifest File{reset}\n")
+
+    # --- Phase 1: Repo selection ---
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    print(f"  {dim}{'#':<4}{'Repository':<40}{'Visibility':<12}{'Language'}{reset}")
+    print(f"  {dim}{'─' * 70}{reset}")
+    for i, repo in enumerate(repos, start=1):
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        lang = repo.language or ""
+        print(f"  {dim}{i:<4}{reset}{bold}{repo.full_name:<40}{reset}{vis:<20}{cyan}{lang}{reset}")
+
+    print()
+    raw = input(f"  {bold}Select repo number{reset} {dim}(or 0 to cancel):{reset} ").strip()
+    if not raw.isdigit():
+        print(f"\n  {err('Invalid input. Enter a number.')}\n")
+        return
+    choice = int(raw)
+    if choice == 0:
+        print(f"\n  {muted('Cancelled.')}\n")
+        return
+    if choice < 1 or choice > len(repos):
+        print(f"\n  {err(f'Selection out of range. Enter 1–{len(repos)}.')}\n")
+        return
+
+    selected_repo = repos[choice - 1]
+
+    # --- Phase 2: Manifest discovery ---
+    print(f"\n  {dim}Scanning {bold}{selected_repo.full_name}{reset}{dim} for manifest files...{reset}")
+    try:
+        root_contents = selected_repo.get_contents("")
+    except GithubException as exc:
+        if exc.status == 404:
+            print(f"\n  {err('Repository is empty or inaccessible.')}\n")
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    items = root_contents if isinstance(root_contents, list) else [root_contents]
+    root_map = {item.name: item for item in items}
+
+    found_manifests = [
+        (filename, label, root_map[filename])
+        for filename, label in MANIFEST_FILES.items()
+        if filename in root_map
+    ]
+
+    if not found_manifests:
+        print(f"\n  {warn('No manifest files found in the root of this repository.')}\n")
+        return
+
+    # --- Phase 3: File selection ---
+    if len(found_manifests) == 1:
+        chosen_filename, chosen_label, chosen_item = found_manifests[0]
+        print(f"\n  {success('Found 1 manifest file:')} {cyan}{chosen_filename}{reset}  {dim}({chosen_label}){reset}")
+        print(f"  {dim}Auto-selected.{reset}")
+    else:
+        print(f"\n  {bold}{cyan}Manifest files found:{reset}\n")
+        print(f"  {dim}{'#':<4}{'File':<40}{'Ecosystem':<32}{'Size'}{reset}")
+        print(f"  {dim}{'─' * 70}{reset}")
+        for i, (filename, label, item) in enumerate(found_manifests, start=1):
+            size = item.size
+            size_str = f"{size:,} B" if size < 1024 else f"{size // 1024:,} KB"
+            print(f"  {dim}{i:<4}{reset}{cyan}{filename:<40}{reset}{dim}{label:<32}{size_str}{reset}")
+
+        print()
+        raw2 = input(f"  {bold}Select file number{reset} {dim}(or 0 to cancel):{reset} ").strip()
+        if not raw2.isdigit():
+            print(f"\n  {err('Invalid input. Enter a number.')}\n")
+            return
+        choice2 = int(raw2)
+        if choice2 == 0:
+            print(f"\n  {muted('Cancelled.')}\n")
+            return
+        if choice2 < 1 or choice2 > len(found_manifests):
+            print(f"\n  {err(f'Selection out of range. Enter 1–{len(found_manifests)}.')}\n")
+            return
+        chosen_filename, chosen_label, chosen_item = found_manifests[choice2 - 1]
+
+    # --- Phase 4: Read file content ---
+    print(f"\n  {dim}Fetching {cyan}{chosen_filename}{reset}{dim}...{reset}")
+    try:
+        file_obj = selected_repo.get_contents(chosen_filename)
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    original_content = file_obj.decoded_content.decode("utf-8")
+    sha = file_obj.sha
+
+    # --- Phase 5: Display with line numbers ---
+    lines = original_content.splitlines()
+    line_count = len(lines)
+    size_bytes = len(original_content.encode("utf-8"))
+    print(f"\n  {bold}{cyan}{chosen_filename}{reset}  {dim}({line_count} lines, {size_bytes:,} bytes){reset}\n")
+    num_width = len(str(line_count))
+    for i, line in enumerate(lines, start=1):
+        print(f"  {dim}{i:{num_width}}{reset}  {line}")
+    print()
+
+    # --- Phase 6: Open in $EDITOR ---
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    if not shutil.which(editor):
+        msg = f"Editor '{editor}' not found on PATH. Set $EDITOR to a valid editor."
+        print(f"\n  {err(msg)}\n")
+        return
+
+    print(f"  {dim}Opening {chosen_filename} in {bold}{editor}{reset}{dim}...{reset}")
+    print(f"  {dim}Save and quit the editor when done.{reset}\n")
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=f"_{chosen_filename}",
+            prefix="bamf_edit_",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp.write(original_content)
+            tmp_path = tmp.name
+
+        result = subprocess.run([editor, tmp_path])
+        if result.returncode != 0:
+            print(f"\n  {warn(f'Editor exited with code {result.returncode}. Treating as cancelled.')}\n")
+            return
+
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            new_content = f.read()
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    # --- Phase 7: Diff preview ---
+    if new_content == original_content:
+        print(f"  {muted('No changes detected. File is unchanged. Nothing to commit.')}\n")
+        return
+
+    original_lines = original_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(
+        original_lines,
+        new_lines,
+        fromfile=f"a/{chosen_filename}",
+        tofile=f"b/{chosen_filename}",
+        lineterm="",
+    ))
+
+    print(f"  {bold}{cyan}Changes:{reset}\n")
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---"):
+            print(f"  {dim}{line}{reset}")
+        elif line.startswith("+"):
+            print(f"  {green}{line}{reset}")
+        elif line.startswith("-"):
+            print(f"  {red}{line}{reset}")
+        elif line.startswith("@@"):
+            print(f"  {cyan}{line}{reset}")
+        else:
+            print(f"  {dim}{line}{reset}")
+    print()
+
+    added = sum(1 for ln in diff if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in diff if ln.startswith("-") and not ln.startswith("---"))
+    print(f"  {green}+{added} line{'s' if added != 1 else ''}{reset}  {red}-{removed} line{'s' if removed != 1 else ''}{reset}\n")
+
+    # --- Phase 8: Confirm and commit message ---
+    confirm = input(f"  {bold}Save and commit to GitHub?{reset} {dim}[y/N]:{reset} ").strip().lower()
+    if confirm not in ("y", "yes"):
+        print(f"\n  {muted('Cancelled. No changes committed.')}\n")
+        return
+
+    default_msg = f"chore: update {chosen_filename} via bamf"
+    raw_msg = input(f"  {bold}Commit message{reset} {dim}[{default_msg}]:{reset} ").strip()
+    commit_message = raw_msg if raw_msg else default_msg
+
+    # --- Phase 9: Commit to GitHub ---
+    print(f"\n  {dim}Committing to {selected_repo.default_branch}...{reset}")
+    try:
+        selected_repo.update_file(
+            path=chosen_filename,
+            message=commit_message,
+            content=new_content,
+            sha=sha,
+            branch=selected_repo.default_branch,
+        )
+        print(f"\n  {success('File committed successfully!')}")
+        print(f"  {lbl('Repository:')} {bold}{selected_repo.full_name}{reset}")
+        print(f"  {lbl('File:      ')} {cyan}{chosen_filename}{reset}")
+        print(f"  {lbl('Branch:    ')} {cyan}{selected_repo.default_branch}{reset}")
+        print(f"  {lbl('Message:   ')} {dim}{commit_message}{reset}\n")
+    except GithubException as exc:
+        if exc.status == 409:
+            print(f"\n  {err('Conflict: the file was modified on GitHub since you fetched it. Re-run to get the latest version.')}\n")
+        elif exc.status in (401, 403):
+            print(f"\n  {err('Permission denied. Your PAT may not have write access to this repository.')}\n")
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
 
 
 def scan_secrets(client: Github, token: str) -> None:
