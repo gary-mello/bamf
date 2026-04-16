@@ -11,12 +11,25 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Show PAT info** — Display scopes and metadata for the active token
 - **Search for Actions files** — Find GitHub Actions workflow files across repos
 - **Repos without branch protection** — Identify repos missing branch protection rules
+- **Search for manifest files** — Detect dependency manifests and lockfiles across 40+ ecosystems
+- **Scan repos for secrets** — Detect leaked secrets (API keys, tokens, credentials) across all repos using [gitleaks](https://github.com/gitleaks/gitleaks)
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 python main.py
+```
+
+### Optional: gitleaks (for secret scanning)
+
+The **Scan repos for secrets** feature requires [gitleaks](https://github.com/gitleaks/gitleaks):
+
+```bash
+# macOS
+brew install gitleaks
+
+# Linux — download from https://github.com/gitleaks/gitleaks/releases
 ```
 
 ## Authentication

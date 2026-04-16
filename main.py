@@ -13,7 +13,7 @@ import os
 import sys
 
 from auth import get_github_client
-from github_ops import clone_all_repos, create_repo, list_repos, search_build_files, show_pat_info, search_actions_files, list_unprotected_repos, search_manifest_files
+from github_ops import clone_all_repos, create_repo, list_repos, scan_secrets, search_build_files, show_pat_info, search_actions_files, list_unprotected_repos, search_manifest_files
 from menu import register_option, run_menu_loop
 
 
@@ -36,6 +36,7 @@ def main() -> None:
     register_option("Search for Actions files",    lambda: search_actions_files(client))
     register_option("Repos without branch protection", lambda: list_unprotected_repos(client))
     register_option("Search for manifest files",       lambda: search_manifest_files(client))
+    register_option("Scan repos for secrets",          lambda: scan_secrets(client, token))
     register_option("Exit", None)
 
     run_menu_loop()
