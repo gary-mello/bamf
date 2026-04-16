@@ -1988,6 +1988,99 @@ def audit_actions_secrets(client: Github) -> None:
         print()
 
 
+def nuke_a_branch(client: Github) -> None:
+    """Scan repos with admin access that have branch protection, then strip protection from a selected one."""
+    print(f"\n{bold}{red}Nuke a Branch{reset} {dim}(remove branch protections){reset}\n")
+
+    # --- Fetch repos ---
+    try:
+        all_repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    # Scan admin-accessible repos for protected default branches
+    total = len(all_repos)
+    print(f"  {dim}Scanning {total} repo(s) for branch protection...{reset}\n")
+
+    protected: list[tuple] = []  # (repo, branch_name)
+    for i, repo in enumerate(all_repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+        if not (repo.permissions and repo.permissions.admin):
+            continue
+        try:
+            branch = repo.get_branch(repo.default_branch)
+            if branch.protected:
+                protected.append((repo, repo.default_branch))
+        except GithubException:
+            continue
+
+    print(" " * 60, end="\r")
+
+    if not protected:
+        print(f"  {warn('No repos found where you have admin access and branch protection is enabled.')}\n")
+        return
+
+    # --- Display repos with protected branches ---
+    print(f"  {dim}{'#':<4}{'Repository':<40}{'Branch':<22}{'Visibility':<12}{'Last pushed'}{reset}")
+    print(f"  {dim}{'─' * 86}{reset}")
+    for i, (repo, branch_name) in enumerate(protected, start=1):
+        vis_color = yellow if repo.private else green
+        vis_label = "private" if repo.private else "public"
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "—"
+        print(
+            f"  {dim}{i:<4}{reset}"
+            f"{bold}{_truncate(repo.full_name, 38):<40}{reset}"
+            f"{cyan}{branch_name:<22}{reset}"
+            f"{vis_color}{vis_label:<12}{reset}"
+            f"{dim}{pushed}{reset}"
+        )
+
+    print()
+    raw = input(f"  {bold}Select repo number{reset} {dim}(or 0 to cancel):{reset} ").strip()
+    if not raw.isdigit():
+        print(f"\n  {err('Invalid input. Enter a number.')}\n")
+        return
+    choice = int(raw)
+    if choice == 0:
+        print(f"\n  {muted('Cancelled.')}\n")
+        return
+    if choice < 1 or choice > len(protected):
+        print(f"\n  {err(f'Selection out of range. Enter 1–{len(protected)}.')}\n")
+        return
+
+    target_repo, target_branch = protected[choice - 1]
+
+    # --- Confirmation ---
+    print()
+    print(f"  {bold}{red}This will remove ALL branch protection rules from '{target_branch}'{reset}")
+    print(f"  {bold}{red}on {target_repo.full_name}.{reset}")
+    confirm = input(f"\n  Confirm? {dim}(y/N):{reset} ").strip().lower()
+    if confirm != "y":
+        print(f"\n  {muted('Cancelled.')}\n")
+        return
+
+    # --- Remove protection ---
+    print(f"\n  {dim}Removing branch protection from '{target_branch}' on {target_repo.full_name} ...{reset}")
+    try:
+        branch = target_repo.get_branch(target_branch)
+        branch.remove_protection()
+        print(f"  {success(f'Branch protection removed from {target_branch} on {target_repo.full_name}.')}\n")
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+
+
 def nuke_repo(client: Github) -> None:
     """List repos the user can delete (admin access) and permanently delete a selected one."""
     print(f"\n{bold}{red}Nuke a Repo{reset} {dim}(permanent deletion){reset}\n")
