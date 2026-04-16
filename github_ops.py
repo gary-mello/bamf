@@ -562,6 +562,81 @@ def search_actions_files(client: Github) -> None:
         )
 
 
+def list_unprotected_repos(client: Github) -> None:
+    """List all repos whose default branch has no branch protection rules enabled."""
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Scanning {bold}{total}{reset}{cyan} repo(s) for missing branch protection...{reset}\n")
+
+    unprotected: list[tuple] = []  # (repo, branch_name)
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            branch = repo.get_branch(repo.default_branch)
+            if not branch.protected:
+                unprotected.append((repo, repo.default_branch))
+        except GithubException:
+            # Empty repo or no access — skip
+            continue
+
+    print(" " * 60, end="\r")
+
+    if not unprotected:
+        print(f"  {success('All repos have branch protection enabled on their default branch.')}\n")
+        return
+
+    # Column widths
+    COL_NAME = 35
+    COL_BRANCH = 20
+    COL_VIS = 10
+    COL_PUSHED = 12
+
+    col_header = (
+        f"{'Repository':<{COL_NAME}} "
+        f"{'Default Branch':<{COL_BRANCH}} "
+        f"{'Visibility':<{COL_VIS}} "
+        f"{'Last Push':<{COL_PUSHED}}"
+    )
+    divider = f"{dim}{'─' * len(col_header)}{reset}"
+
+    print(f"{bold}{cyan}{col_header}{reset}")
+    print(divider)
+
+    for repo, branch_name in unprotected:
+        name = _truncate(repo.full_name, COL_NAME)
+        vis_colored = f"{yellow}{'private':<{COL_VIS}}{reset}" if repo.private else f"{green}{'public':<{COL_VIS}}{reset}"
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
+
+        print(
+            f"{bold}{white}{name:<{COL_NAME}}{reset} "
+            f"{cyan}{branch_name:<{COL_BRANCH}}{reset} "
+            f"{vis_colored} "
+            f"{dim}{pushed:<{COL_PUSHED}}{reset}"
+        )
+
+    print(divider)
+    count = len(unprotected)
+    print(
+        f"\n  {red}{bold}{count} repo{'s' if count != 1 else ''}{reset}"
+        f"{red} of {total} {'have' if count != 1 else 'has'} no branch protection on the default branch.{reset}\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
