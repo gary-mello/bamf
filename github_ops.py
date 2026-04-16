@@ -989,9 +989,9 @@ def edit_manifest_file(client: Github) -> None:
 
     print(f"\n{cyan}Edit Manifest File{reset}\n")
 
-    # --- Phase 1: Repo selection ---
+    # --- Phase 1: Repo selection (only repos with manifest files) ---
     try:
-        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+        all_repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
     except GithubException as exc:
         msg = exc.data.get("message", str(exc))
         print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
@@ -1000,13 +1000,38 @@ def edit_manifest_file(client: Github) -> None:
         print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
         return
 
-    if not repos:
+    if not all_repos:
         print(f"\n  {warn('No repositories found.')}\n")
         return
 
-    print(f"  {dim}{'#':<4}{'Repository':<40}{'Visibility':<12}{'Language'}{reset}")
+    print(f"  {dim}Scanning {len(all_repos)} repositories for manifest files...{reset}")
+
+    repos_with_manifests: list[tuple] = []
+    for repo in all_repos:
+        try:
+            root_contents = repo.get_contents("")
+        except GithubException:
+            continue
+        except requests.exceptions.ConnectionError:
+            print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+            return
+        items = root_contents if isinstance(root_contents, list) else [root_contents]
+        root_map = {item.name: item for item in items}
+        manifests = [
+            (filename, label, root_map[filename])
+            for filename, label in MANIFEST_FILES.items()
+            if filename in root_map
+        ]
+        if manifests:
+            repos_with_manifests.append((repo, manifests))
+
+    if not repos_with_manifests:
+        print(f"\n  {warn('No repositories with manifest files found.')}\n")
+        return
+
+    print(f"\n  {dim}{'#':<4}{'Repository':<40}{'Visibility':<12}{'Language'}{reset}")
     print(f"  {dim}{'─' * 70}{reset}")
-    for i, repo in enumerate(repos, start=1):
+    for i, (repo, _) in enumerate(repos_with_manifests, start=1):
         vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
         lang = repo.language or ""
         print(f"  {dim}{i:<4}{reset}{bold}{repo.full_name:<40}{reset}{vis:<20}{cyan}{lang}{reset}")
@@ -1020,39 +1045,14 @@ def edit_manifest_file(client: Github) -> None:
     if choice == 0:
         print(f"\n  {muted('Cancelled.')}\n")
         return
-    if choice < 1 or choice > len(repos):
-        print(f"\n  {err(f'Selection out of range. Enter 1–{len(repos)}.')}\n")
+    if choice < 1 or choice > len(repos_with_manifests):
+        print(f"\n  {err(f'Selection out of range. Enter 1–{len(repos_with_manifests)}.')}\n")
         return
 
-    selected_repo = repos[choice - 1]
+    selected_repo, found_manifests = repos_with_manifests[choice - 1]
 
-    # --- Phase 2: Manifest discovery ---
-    print(f"\n  {dim}Scanning {bold}{selected_repo.full_name}{reset}{dim} for manifest files...{reset}")
-    try:
-        root_contents = selected_repo.get_contents("")
-    except GithubException as exc:
-        if exc.status == 404:
-            print(f"\n  {err('Repository is empty or inaccessible.')}\n")
-        else:
-            msg = exc.data.get("message", str(exc))
-            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
-        return
-    except requests.exceptions.ConnectionError:
-        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
-        return
-
-    items = root_contents if isinstance(root_contents, list) else [root_contents]
-    root_map = {item.name: item for item in items}
-
-    found_manifests = [
-        (filename, label, root_map[filename])
-        for filename, label in MANIFEST_FILES.items()
-        if filename in root_map
-    ]
-
-    if not found_manifests:
-        print(f"\n  {warn('No manifest files found in the root of this repository.')}\n")
-        return
+    # --- Phase 2: Manifest discovery (already scanned) ---
+    print(f"\n  {dim}Found {len(found_manifests)} manifest file(s) in {bold}{selected_repo.full_name}{reset}{dim}.{reset}")
 
     # --- Phase 3: File selection ---
     if len(found_manifests) == 1:
