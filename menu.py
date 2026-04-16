@@ -28,7 +28,9 @@ def show_menu() -> None:
     """Print the numbered menu to stdout."""
     bar = f"{bold}{cyan}{'═' * 42}{reset}"
     print(bar)
-    print(f"{bold}{cyan}{'  bamf — Main Menu':^42}{reset}")
+    print(f"{bold}{cyan}{'╔╗ ╔═╗╔╦╗╔═╗':^42}{reset}")
+    print(f"{bold}{cyan}{'╠╩╗╠═╣║║║╠╣ ':^42}{reset}")
+    print(f"{bold}{cyan}{'╚═╝╩ ╩╩ ╩╚  ':^42}{reset}")
     print(bar)
     for i, (label, handler) in enumerate(_options, start=1):
         if handler is None:
