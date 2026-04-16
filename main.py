@@ -14,6 +14,7 @@ import sys
 
 from auth import get_github_client
 from github_ops import (
+    add_collaborator,
     audit_actions_secrets,
     audit_branch_protection,
     audit_collaborators,
@@ -72,6 +73,7 @@ def main() -> None:
     register_option("Edit a manifest file",            lambda: edit_manifest_file(client))
     register_option("Nuke branch protections",         lambda: nuke_a_branch(client))
     register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client))
+    register_option("Add collaborator",                  lambda: add_collaborator(client))
 
     run_menu_loop()
 
