@@ -1820,6 +1820,80 @@ def audit_collaborators(client: Github) -> None:
         print()
 
 
+def add_collaborator(client: Github) -> None:
+    """Add a GitHub user as a collaborator to one of your repositories."""
+    try:
+        all_repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not all_repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    print(f"\n  {dim}{'#':<4}{'Repository':<45}{'Visibility':<12}{'Language'}{reset}")
+    print(f"  {dim}{'─' * 74}{reset}")
+    for i, repo in enumerate(all_repos, start=1):
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        lang = repo.language or ""
+        print(f"  {dim}{i:<4}{reset}{bold}{repo.full_name:<45}{reset}{vis:<20}{cyan}{lang}{reset}")
+
+    print()
+    raw = input(f"  {bold}Select repo number{reset} {dim}(or 0 to cancel):{reset} ").strip()
+    if not raw.isdigit():
+        print(f"\n  {err('Invalid input. Enter a number.')}\n")
+        return
+    choice = int(raw)
+    if choice == 0:
+        print(f"\n  {dim}Cancelled.{reset}\n")
+        return
+    if choice < 1 or choice > len(all_repos):
+        print(f"\n  {err(f'Selection out of range. Enter 1\u2013{len(all_repos)}.')}\n")
+        return
+
+    selected_repo = all_repos[choice - 1]
+
+    print()
+    username = input(f"  {bold}GitHub username to add:{reset} ").strip()
+    if not username:
+        print(f"\n  {err('Username cannot be empty.')}\n")
+        return
+
+    print()
+    confirm = input(
+        f"  {bold}Add {yellow}{username}{reset}{bold} as collaborator to "
+        f"{cyan}{selected_repo.full_name}{reset}{bold}?{reset} {dim}[y/N]:{reset} "
+    ).strip().lower()
+    if confirm not in ("y", "yes"):
+        print(f"\n  {dim}Cancelled.{reset}\n")
+        return
+
+    print(f"\n  {dim}Adding collaborator...{reset}")
+    try:
+        selected_repo.add_to_collaborators(username, permission="push")
+        print(f"\n  {success('Collaborator added successfully!')}")
+        print(f"  {lbl('Repository:')} {bold}{selected_repo.full_name}{reset}")
+        print(f"  {lbl('Username:  ')} {bold}{username}{reset}")
+        print(f"  {lbl('Permission:')} {bold}push{reset}\n")
+    except GithubException as exc:
+        if exc.status == 422:
+            errors = exc.data.get("errors", [])
+            msg = errors[0].get("message", "invalid user or already a collaborator") if errors else "invalid user or already a collaborator"
+            print(f"\n  {err(f'Could not add collaborator: {msg}')}\n")
+        elif exc.status in (403, 404):
+            print(f"\n  {err('Permission denied or user/repo not found.')}\n")
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+
+
 def audit_deploy_keys(client: Github) -> None:
     """List all deploy keys across repos, flagging write-access and unused keys."""
     from datetime import datetime, timezone as _tz
