@@ -11,6 +11,8 @@ Adding a new feature requires exactly one register_option() call.
 
 from typing import Callable, Optional
 
+from colors import bold, cyan, yellow, green, red, dim, reset, white
+
 
 # Internal registry: list of (label, handler | None)
 # None handler = exit sentinel
@@ -24,12 +26,17 @@ def register_option(label: str, handler: Optional[Callable]) -> None:
 
 def show_menu() -> None:
     """Print the numbered menu to stdout."""
-    print("=" * 40)
-    print("  GitHub CLI — Main Menu")
-    print("=" * 40)
-    for i, (label, _) in enumerate(_options, start=1):
-        print(f"  {i}. {label}")
-    print("=" * 40)
+    bar = f"{bold}{cyan}{'═' * 42}{reset}"
+    print(bar)
+    print(f"{bold}{cyan}{'  GitHub CLI — Main Menu':^42}{reset}")
+    print(bar)
+    for i, (label, handler) in enumerate(_options, start=1):
+        if handler is None:
+            # Exit option — muted
+            print(f"  {dim}{i}. {label}{reset}")
+        else:
+            print(f"  {yellow}{i}.{reset} {white}{label}{reset}")
+    print(bar)
 
 
 def dispatch(choice: int) -> bool:
@@ -52,19 +59,19 @@ def run_menu_loop() -> None:
 
     while True:
         show_menu()
-        raw = input(f"Select an option (1-{n}): ").strip()
+        raw = input(f"\n{bold}Select an option (1-{n}):{reset} ").strip()
 
         try:
             choice = int(raw)
         except ValueError:
-            print(f"\n  Please enter a number between 1 and {n}.\n")
+            print(f"\n  {red}Please enter a number between 1 and {n}.{reset}\n")
             continue
 
         if not (1 <= choice <= n):
-            print(f"\n  Please enter a number between 1 and {n}.\n")
+            print(f"\n  {red}Please enter a number between 1 and {n}.{reset}\n")
             continue
 
         keep_running = dispatch(choice)
         if not keep_running:
-            print("\nGoodbye!\n")
+            print(f"\n{bold}{green}Goodbye!{reset}\n")
             break

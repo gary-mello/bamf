@@ -13,10 +13,12 @@ from datetime import timezone
 from github import Github, GithubException
 import requests
 
+from colors import bold, cyan, green, red, yellow, magenta, white, dim, reset, muted, header as hdr, label as lbl, success, warn, error as err, value as val
+
 
 def list_repos(client: Github) -> None:
     """List all repos accessible to the authenticated user, sorted by most recently updated."""
-    print("\nFetching repositories...\n")
+    print(f"\n{cyan}Fetching repositories...{reset}\n")
 
     try:
         user = client.get_user()
@@ -29,86 +31,88 @@ def list_repos(client: Github) -> None:
         COL_LANG  = 16
         COL_DESC  = 50
 
-        header = (
+        col_header = (
             f"{'#':<{COL_NUM}} "
             f"{'Name':<{COL_NAME}} "
             f"{'Visibility':<{COL_VIS}} "
             f"{'Language':<{COL_LANG}} "
             f"{'Description':<{COL_DESC}}"
         )
-        divider = "-" * len(header)
+        divider = "─" * len(col_header)
 
-        print(header)
-        print(divider)
+        print(f"{bold}{cyan}{col_header}{reset}")
+        print(f"{dim}{divider}{reset}")
 
         count = 0
         for repo in repos:
             count += 1
             name = _truncate(repo.name, COL_NAME)
             visibility = "private" if repo.private else "public"
+            vis_colored = f"{yellow}{'private':<{COL_VIS}}{reset}" if repo.private else f"{green}{'public':<{COL_VIS}}{reset}"
             language = repo.language or "-"
             description = _truncate(repo.description or "", COL_DESC)
 
             print(
-                f"{count:<{COL_NUM}} "
-                f"{name:<{COL_NAME}} "
-                f"{visibility:<{COL_VIS}} "
-                f"{language:<{COL_LANG}} "
-                f"{description:<{COL_DESC}}"
+                f"{dim}{count:<{COL_NUM}}{reset} "
+                f"{bold}{white}{name:<{COL_NAME}}{reset} "
+                f"{vis_colored} "
+                f"{cyan}{language:<{COL_LANG}}{reset} "
+                f"{dim}{description:<{COL_DESC}}{reset}"
             )
 
-        print(divider)
-        print(f"\n  Total: {count} repo(s)\n")
+        print(f"{dim}{divider}{reset}")
+        print(f"\n  {bold}Total:{reset} {green}{count}{reset} repo(s)\n")
 
     except GithubException as exc:
         if exc.status in (403, 429):
             _handle_rate_limit(client, exc)
         else:
-            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
 
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
 
 
 def clone_all_repos(client: Github, token: str) -> None:
     """Clone all repos accessible to the authenticated user into a local directory."""
     default_dir = os.path.join(os.getcwd(), "cloned_repos")
-    raw = input(f"\nDestination directory [{default_dir}]: ").strip()
+    raw = input(f"\n{bold}Destination directory{reset} [{dim}{default_dir}{reset}]: ").strip()
     dest = raw if raw else default_dir
 
     if not shutil.which("git"):
-        print("\n  Error: 'git' was not found on your PATH. Please install git and try again.\n")
+        print(f"\n  {err('Error: git was not found on your PATH. Please install git and try again.')}\n")
         return
 
     try:
         repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
     except GithubException as exc:
-        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
         return
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
         return
 
     if not repos:
-        print("\n  No repositories found.\n")
+        print(f"\n  {warn('No repositories found.')}\n")
         return
 
     os.makedirs(dest, exist_ok=True)
     total = len(repos)
     cloned = skipped = failed = 0
 
-    print(f"\nCloning {total} repo(s) into: {dest}\n")
+    print(f"\n{cyan}Cloning {bold}{total}{reset}{cyan} repo(s) into:{reset} {white}{dest}{reset}\n")
 
     for i, repo in enumerate(repos, start=1):
         repo_dir = os.path.join(dest, repo.name)
-        prefix = f"  ({i}/{total}) {repo.name}"
+        prefix = f"  {dim}({i}/{total}){reset} {bold}{white}{repo.name}{reset}"
 
         if os.path.isdir(repo_dir):
-            print(f"{prefix} — skipped (directory already exists)")
+            print(f"{prefix} {dim}— skipped (directory already exists){reset}")
             skipped += 1
             continue
 
-        # Embed token in HTTPS URL for authenticated cloning (works for public + private repos)
         owner = repo.owner.login
         clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo.name}.git"
 
@@ -119,15 +123,20 @@ def clone_all_repos(client: Github, token: str) -> None:
         )
 
         if result.returncode == 0:
-            visibility = "private" if repo.private else "public"
-            print(f"{prefix} — cloned  [{visibility}]")
+            vis_tag = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+            print(f"{prefix} {green}— cloned{reset}  [{vis_tag}]")
             cloned += 1
         else:
-            err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
-            print(f"{prefix} — FAILED: {err}")
+            clone_err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
+            print(f"{prefix} {red}— FAILED:{reset} {clone_err}")
             failed += 1
 
-    print(f"\n  Done. Cloned: {cloned}  |  Skipped: {skipped}  |  Failed: {failed}\n")
+    print(
+        f"\n  {bold}Done.{reset}  "
+        f"{green}Cloned: {cloned}{reset}  |  "
+        f"{dim}Skipped: {skipped}{reset}  |  "
+        f"{red}Failed: {failed}{reset}\n"
+    )
 
 
 def create_repo(client: Github) -> None:
@@ -136,30 +145,32 @@ def create_repo(client: Github) -> None:
 
     # --- Name ---
     while True:
-        name = input("  Repository name: ").strip()
+        name = input(f"  {bold}Repository name:{reset} ").strip()
         if not name:
-            print("  Name cannot be empty. Please try again.")
+            print(f"  {err('Name cannot be empty. Please try again.')}")
             continue
         if " " in name:
-            print("  Name cannot contain spaces (use hyphens or underscores). Please try again.")
+            print(f"  {err('Name cannot contain spaces (use hyphens or underscores). Please try again.')}")
             continue
         break
 
     # --- Visibility ---
     while True:
-        vis = input("  Visibility — (p)ublic or (r)ivate? [private]: ").strip().lower()
+        vis = input(f"  {bold}Visibility{reset} — {green}(p)ublic{reset} or {yellow}(r)ivate{reset}? [{yellow}private{reset}]: ").strip().lower()
         if vis in ("", "r", "private"):
             private = True
             break
         if vis in ("p", "public"):
             private = False
             break
-        print("  Please enter 'p' for public or 'r' for private.")
+        msg_vis = "Please enter 'p' for public or 'r' for private."
+        print(f"  {err(msg_vis)}")
 
     # --- Description (optional) ---
-    description = input("  Description (optional, press Enter to skip): ").strip()
+    description = input(f"  {bold}Description{reset} {dim}(optional, press Enter to skip){reset}: ").strip()
 
-    print(f"\n  Creating {'private' if private else 'public'} repo '{name}'...")
+    vis_label = f"{yellow}private{reset}" if private else f"{green}public{reset}"
+    print(f"\n  Creating {vis_label} repo {cyan}'{name}'{reset}...")
 
     try:
         user = client.get_user()
@@ -169,22 +180,23 @@ def create_repo(client: Github) -> None:
             description=description or "",
             auto_init=False,
         )
-        print(f"\n  Repository created successfully!")
-        print(f"  Name:       {repo.full_name}")
-        print(f"  Visibility: {'private' if repo.private else 'public'}")
-        print(f"  Clone URL:  {repo.clone_url}")
-        print(f"  SSH URL:    {repo.ssh_url}\n")
+        print(f"\n  {success('Repository created successfully!')}")
+        print(f"  {lbl('Name:      ')} {bold}{repo.full_name}{reset}")
+        print(f"  {lbl('Visibility:')} {vis_label}")
+        print(f"  {lbl('Clone URL: ')} {dim}{repo.clone_url}{reset}")
+        print(f"  {lbl('SSH URL:   ')} {dim}{repo.ssh_url}{reset}\n")
 
     except GithubException as exc:
         if exc.status == 422:
             errors = exc.data.get("errors", [])
             msg = errors[0].get("message", "invalid name or repo already exists") if errors else "invalid name or repo already exists"
-            print(f"\n  Could not create repo: {msg}\n")
+            print(f"\n  {err(f'Could not create repo: {msg}')}\n")
         else:
-            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
 
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
 
 
 def search_build_files(client: Github) -> None:
@@ -223,23 +235,24 @@ def search_build_files(client: Github) -> None:
     try:
         repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
     except GithubException as exc:
-        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
         return
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
         return
 
     if not repos:
-        print("\n  No repositories found.\n")
+        print(f"\n  {warn('No repositories found.')}\n")
         return
 
     total = len(repos)
-    print(f"\nScanning {total} repo(s) for build files...\n")
+    print(f"\n{cyan}Scanning {bold}{total}{reset}{cyan} repo(s) for build files...{reset}\n")
 
     hits = 0
 
     for i, repo in enumerate(repos, start=1):
-        print(f"  Checking ({i}/{total}): {repo.name} ...", end="\r", flush=True)
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
 
         # --- Derive PAT access level for this repo ---
         perms = repo.permissions
@@ -258,16 +271,15 @@ def search_build_files(client: Github) -> None:
         try:
             root_contents = repo.get_contents("")
         except GithubException:
-            # Empty repo or permission denied — skip silently
             continue
 
         root_names = {item.name: item for item in root_contents}
 
         # --- Match against known build file names ---
         found: list[str] = []
-        for filename, label in BUILD_FILES.items():
+        for filename, build_label in BUILD_FILES.items():
             if filename in root_names:
-                found.append(f"    {filename:<30}  {label}")
+                found.append(f"    {cyan}{filename:<30}{reset}  {dim}{build_label}{reset}")
 
         # --- Check .github/workflows for GitHub Actions ---
         actions_count = 0
@@ -280,7 +292,8 @@ def search_build_files(client: Github) -> None:
                 ]
                 actions_count = len(yml_files)
                 if actions_count:
-                    found.append(f"    .github/workflows/{'*':<22}  GitHub Actions  ({actions_count} workflow{'s' if actions_count != 1 else ''})")
+                    wf_label = f"GitHub Actions  ({actions_count} workflow{'s' if actions_count != 1 else ''})"
+                    found.append(f"    {magenta}{'.github/workflows/*':<30}{reset}  {dim}{wf_label}{reset}")
             except GithubException:
                 pass
 
@@ -289,31 +302,35 @@ def search_build_files(client: Github) -> None:
 
         # --- Print repo header ---
         hits += 1
-        print(" " * 60, end="\r")  # clear the progress line
+        print(" " * 60, end="\r")
 
         pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
-        fork_tag = "  [fork]" if repo.fork else ""
-        visibility = "private" if repo.private else "public"
+        fork_tag = f"  {yellow}[fork]{reset}" if repo.fork else ""
+        vis_colored = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        access_colored = (
+            f"{red}admin{reset}" if access == "admin" else
+            f"{yellow}write{reset}" if access == "write" else
+            f"{green}read{reset}" if access == "read" else
+            f"{dim}{access}{reset}"
+        )
         stars = f"★ {repo.stargazers_count}" if repo.stargazers_count else "★ 0"
         open_issues = f"{repo.open_issues_count} open issue{'s' if repo.open_issues_count != 1 else ''}"
-        branch = repo.default_branch
 
-        print(f"  {repo.full_name}{fork_tag}")
-        print(f"    Visibility:  {visibility}   |   Access: {access}   |   Branch: {branch}")
-        print(f"    Language:    {repo.language or '-':<20}  {stars}   |   {open_issues}")
-        print(f"    Last push:   {pushed}")
-        print(f"    Build files:")
+        print(f"  {bold}{white}{repo.full_name}{reset}{fork_tag}")
+        print(f"    {lbl('Visibility:')}  {vis_colored}   {dim}|{reset}   {lbl('Access:')} {access_colored}   {dim}|{reset}   {lbl('Branch:')} {cyan}{repo.default_branch}{reset}")
+        print(f"    {lbl('Language:  ')}  {cyan}{repo.language or '-':<20}{reset}  {yellow}{stars}{reset}   {dim}|{reset}   {dim}{open_issues}{reset}")
+        print(f"    {lbl('Last push: ')}  {dim}{pushed}{reset}")
+        print(f"    {lbl('Build files:')}")
         for line in found:
             print(line)
         print()
 
-    # Clear any leftover progress line
     print(" " * 60, end="\r")
 
     if hits == 0:
-        print("  No build files found in any accessible repository.\n")
+        print(f"  {warn('No build files found in any accessible repository.')}\n")
     else:
-        print(f"  Found build files in {hits} of {total} repo(s).\n")
+        print(f"  {success(f'Found build files in {hits} of {total} repo(s).')}\n")
 
 
 def show_pat_info(client: Github, token: str) -> None:
@@ -397,54 +414,49 @@ def show_pat_info(client: Github, token: str) -> None:
         )
         rate_resources = rate_resp.json().get("resources", {})
 
-        divider = "-" * 60
-        print(divider)
-        print("  Token Details")
-        print(divider)
-        print(f"  Type:          {token_type}")
-        print(f"  Prefix:        {token[:8]}{'*' * 10}  (first 8 chars shown)")
+        div = f"{dim}{'─' * 60}{reset}"
+        def section(title: str) -> None:
+            print(div)
+            print(f"  {bold}{cyan}{title}{reset}")
+            print(div)
+
+        section("Token Details")
+        print(f"  {lbl('Type:         ')} {bold}{white}{token_type}{reset}")
+        print(f"  {lbl('Prefix:       ')} {yellow}{token[:8]}{'*' * 10}{reset}  {dim}(first 8 chars shown){reset}")
         print()
 
-        print(divider)
-        print("  Account")
-        print(divider)
-        print(f"  Login:         {user.login}")
+        section("Account")
+        print(f"  {lbl('Login:        ')} {bold}{green}{user.login}{reset}")
         if user.name:
-            print(f"  Name:          {user.name}")
+            print(f"  {lbl('Name:         ')} {white}{user.name}{reset}")
         if user.email:
-            print(f"  Email:         {user.email}")
-        print(f"  Account type:  {'Organization' if user.type == 'Organization' else 'Personal'}")
+            print(f"  {lbl('Email:        ')} {white}{user.email}{reset}")
+        print(f"  {lbl('Account type: ')} {white}{'Organization' if user.type == 'Organization' else 'Personal'}{reset}")
         if user.company:
-            print(f"  Company:       {user.company}")
+            print(f"  {lbl('Company:      ')} {white}{user.company}{reset}")
         if user.plan:
-            print(f"  GitHub plan:   {user.plan.name}")
-        print(f"  Public repos:  {user.public_repos}")
-        print(f"  Private repos: {user.total_private_repos or 0}")
-        print(f"  Followers:     {user.followers}  |  Following: {user.following}")
+            print(f"  {lbl('GitHub plan:  ')} {magenta}{user.plan.name}{reset}")
+        print(f"  {lbl('Public repos: ')} {white}{user.public_repos}{reset}")
+        print(f"  {lbl('Private repos:')} {white}{user.total_private_repos or 0}{reset}")
+        print(f"  {lbl('Followers:    ')} {white}{user.followers}{reset}  {dim}|{reset}  {lbl('Following:')} {white}{user.following}{reset}")
         print()
 
-        print(divider)
         if token_type == "Fine-Grained PAT":
-            print("  Permissions  (fine-grained — per-repository)")
-            print(divider)
-            print("  Fine-grained PATs use per-repository permissions rather than")
-            print("  global scopes. Permissions are not enumerable via the REST API.")
-            print("  Manage this token at: https://github.com/settings/tokens")
+            section("Permissions  (fine-grained — per-repository)")
+            print(f"  {dim}Fine-grained PATs use per-repository permissions rather than{reset}")
+            print(f"  {dim}global scopes. Permissions are not enumerable via the REST API.{reset}")
+            print(f"  {dim}Manage this token at: https://github.com/settings/tokens{reset}")
         else:
-            print(f"  Scopes  ({len(scopes)} granted)")
-            print(divider)
+            section(f"Scopes  ({len(scopes)} granted)")
             if scopes:
                 for scope in scopes:
                     desc = SCOPE_DESCRIPTIONS.get(scope, "")
-                    bullet = f"  • {scope:<28}"
-                    print(f"{bullet}  {desc}" if desc else bullet)
+                    print(f"  {green}•{reset} {yellow}{scope:<28}{reset}  {dim}{desc}{reset}" if desc else f"  {green}•{reset} {yellow}{scope}{reset}")
             else:
-                print("  (none) — token has read-only access to public data only")
+                print(f"  {dim}(none) — token has read-only access to public data only{reset}")
         print()
 
-        print(divider)
-        print("  Rate Limits")
-        print(divider)
+        section("Rate Limits")
 
         from datetime import datetime, timezone as tz
 
@@ -456,21 +468,27 @@ def show_pat_info(client: Github, token: str) -> None:
                 datetime.fromtimestamp(reset_ts, tz=tz.utc).strftime("%H:%M UTC")
                 if reset_ts else "unknown"
             )
-            return f"{remaining:>6,} / {limit:,} remaining  (resets {reset_str})" if isinstance(remaining, int) else f"{remaining} / {limit}"
+            pct = (remaining / limit) if isinstance(remaining, int) and isinstance(limit, int) and limit > 0 else 0
+            color = green if pct > 0.5 else yellow if pct > 0.1 else red
+            return (
+                f"{color}{remaining:>6,}{reset} {dim}/{reset} {white}{limit:,}{reset} {dim}remaining  (resets {reset_str}){reset}"
+                if isinstance(remaining, int) else f"{remaining} / {limit}"
+            )
 
-        for label, key in [("Core API", "core"), ("Search API", "search"), ("GraphQL API", "graphql")]:
+        for rate_label, key in [("Core API", "core"), ("Search API", "search"), ("GraphQL API", "graphql")]:
             res = rate_resources.get(key)
             if res is not None:
-                print(f"  {label:<14} {_fmt_resource(res)}")
+                print(f"  {lbl(f'{rate_label:<14}')} {_fmt_resource(res)}")
         print()
 
     except GithubException as exc:
         if exc.status in (403, 429):
             _handle_rate_limit(client, exc)
         else:
-            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
 
 
 def search_actions_files(client: Github) -> None:
@@ -478,29 +496,29 @@ def search_actions_files(client: Github) -> None:
     try:
         repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
     except GithubException as exc:
-        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
         return
     except requests.exceptions.ConnectionError:
-        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
         return
 
     if not repos:
-        print("\n  No repositories found.\n")
+        print(f"\n  {warn('No repositories found.')}\n")
         return
 
     total = len(repos)
-    print(f"\nScanning {total} repo(s) for GitHub Actions workflow files...\n")
+    print(f"\n{cyan}Scanning {bold}{total}{reset}{cyan} repo(s) for GitHub Actions workflow files...{reset}\n")
 
     total_workflows = 0
     repos_with_actions = 0
 
     for i, repo in enumerate(repos, start=1):
-        print(f"  Checking ({i}/{total}): {repo.name} ...", end="\r", flush=True)
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
 
         try:
             contents = repo.get_contents(".github/workflows")
         except GithubException:
-            # Folder missing or permission denied — skip
             continue
 
         if not isinstance(contents, list):
@@ -517,26 +535,30 @@ def search_actions_files(client: Github) -> None:
         repos_with_actions += 1
         total_workflows += len(yml_files)
 
-        print(" " * 60, end="\r")  # clear progress line
+        print(" " * 60, end="\r")
 
-        visibility = "private" if repo.private else "public"
+        vis_colored = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
         pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
         wf_count = len(yml_files)
-        print(f"  {repo.full_name}  [{visibility}]  —  last push: {pushed}  —  {wf_count} workflow{'s' if wf_count != 1 else ''}")
+        print(
+            f"  {bold}{white}{repo.full_name}{reset}  [{vis_colored}]  "
+            f"{dim}—  last push: {pushed}  —{reset}  "
+            f"{magenta}{wf_count} workflow{'s' if wf_count != 1 else ''}{reset}"
+        )
 
         for wf in yml_files:
-            print(f"    • {wf.name:<40}  {wf.path}")
+            print(f"    {green}•{reset} {cyan}{wf.name:<40}{reset}  {dim}{wf.path}{reset}")
 
         print()
 
     print(" " * 60, end="\r")
 
     if repos_with_actions == 0:
-        print("  No GitHub Actions workflow files found in any accessible repository.\n")
+        print(f"  {warn('No GitHub Actions workflow files found in any accessible repository.')}\n")
     else:
         print(
-            f"  Found {total_workflows} workflow file{'s' if total_workflows != 1 else ''} "
-            f"across {repos_with_actions} of {total} repo(s).\n"
+            f"  {success(f'Found {total_workflows} workflow file{chr(115) if total_workflows != 1 else str()} '
+                         f'across {repos_with_actions} of {total} repo(s).')}\n"
         )
 
 
@@ -557,8 +579,10 @@ def _handle_rate_limit(client: Github, exc: GithubException) -> None:
         rate = client.get_rate_limit().core
         reset_utc = rate.reset.replace(tzinfo=timezone.utc)
         print(
-            f"\n  Rate limit exceeded. Limit resets at {reset_utc.strftime('%H:%M:%S UTC')}. "
-            f"({rate.remaining} requests remaining)\n"
+            f"\n  {red}{bold}Rate limit exceeded.{reset} "
+            f"{yellow}Limit resets at {reset_utc.strftime('%H:%M:%S UTC')}.{reset} "
+            f"{dim}({rate.remaining} requests remaining){reset}\n"
         )
     except Exception:
-        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
