@@ -5,9 +5,11 @@ Each function accepts an authenticated Github client as its first argument
 and prints results directly to the terminal.
 """
 
+import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import timezone
 
 from github import Github, GithubException
@@ -793,6 +795,132 @@ def search_manifest_files(client: Github) -> None:
             f"  {success(f'Found {total_files_found} manifest file{chr(115) if total_files_found != 1 else str()} '
                          f'across {hits} of {total} repo(s).')}\n"
         )
+
+
+def scan_secrets(client: Github, token: str) -> None:
+    """Shallow-clone all accessible repos and scan them for leaked secrets using gitleaks."""
+
+    if not shutil.which("gitleaks"):
+        print(f"\n  {err('gitleaks is not installed or not in PATH.')}")
+        print(f"  {dim}macOS:   brew install gitleaks{reset}")
+        print(f"  {dim}Linux:   https://github.com/gitleaks/gitleaks/releases{reset}\n")
+        return
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Scanning {bold}{total}{reset}{cyan} repo(s) for secrets using gitleaks...{reset}")
+    print(f"  {dim}(shallow clone — scans latest commit of each repo){reset}\n")
+
+    findings_by_repo: dict[str, list[dict]] = {}
+    clone_errors: list[str] = []
+    repo_lookup = {r.full_name: r for r in repos}
+
+    with tempfile.TemporaryDirectory(prefix="bamf_secrets_") as tmpdir:
+        for i, repo in enumerate(repos, start=1):
+            repo_dir = os.path.join(tmpdir, repo.name)
+            clone_url = f"https://x-access-token:{token}@github.com/{repo.full_name}.git"
+
+            print(f"  {dim}[{i}/{total}] Cloning  {repo.name} ...{reset}", end="\r", flush=True)
+
+            clone_result = subprocess.run(
+                ["git", "clone", "--depth=1", "--quiet", clone_url, repo_dir],
+                capture_output=True, text=True,
+            )
+            if clone_result.returncode != 0:
+                clone_errors.append(repo.name)
+                continue
+
+            print(f"  {dim}[{i}/{total}] Scanning {repo.name} ...{reset}", end="\r", flush=True)
+
+            report_path = os.path.join(tmpdir, f"{repo.name}.json")
+            subprocess.run(
+                [
+                    "gitleaks", "detect",
+                    "--source", repo_dir,
+                    "--report-format", "json",
+                    "--report-path", report_path,
+                    "--no-banner",
+                ],
+                capture_output=True, text=True,
+            )
+
+            if os.path.exists(report_path):
+                try:
+                    raw = open(report_path).read().strip()
+                    if raw and raw != "null":
+                        data = json.loads(raw)
+                        if isinstance(data, list) and data:
+                            findings_by_repo[repo.full_name] = data
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+    print(" " * 70, end="\r")
+
+    if not findings_by_repo:
+        print(f"  {success('No secrets detected in any repository.')}")
+        if clone_errors:
+            skipped = ", ".join(clone_errors[:5]) + ("…" if len(clone_errors) > 5 else "")
+            print(f"  {warn(f'{len(clone_errors)} repo(s) could not be cloned (skipped): {skipped}')}")
+        print()
+        return
+
+    total_findings = sum(len(f) for f in findings_by_repo.values())
+    repos_hit = len(findings_by_repo)
+    print(
+        f"  {red}{bold}[!] {total_findings} potential secret{'s' if total_findings != 1 else ''} "
+        f"found across {repos_hit} repo{'s' if repos_hit != 1 else ''}:{reset}\n"
+    )
+
+    for repo_name, findings in findings_by_repo.items():
+        repo_obj = repo_lookup.get(repo_name)
+        vis_str = ""
+        if repo_obj:
+            vis_str = f"  [{yellow}private{reset}]" if repo_obj.private else f"  [{green}public{reset}]"
+
+        print(f"  {bold}{red}{repo_name}{reset}{vis_str}  {dim}{len(findings)} finding{'s' if len(findings) != 1 else ''}{reset}")
+        if repo_obj:
+            print(f"    {lbl('URL:')}  {dim}{repo_obj.html_url}{reset}")
+
+        for finding in findings:
+            rule_id     = finding.get("RuleID", "unknown")
+            description = finding.get("Description") or rule_id
+            file_path   = finding.get("File", "")
+            start_line  = finding.get("StartLine", "")
+            secret_raw  = finding.get("Secret", "")
+            commit_hash = (finding.get("Commit") or "")[:8]
+            author      = finding.get("Author", "")
+
+            print(f"\n    {red}>{reset} {bold}{description}{reset}  {dim}[{rule_id}]{reset}")
+            if file_path:
+                loc = f"{file_path}:{start_line}" if start_line else file_path
+                print(f"      {lbl('File:   ')} {cyan}{loc}{reset}")
+            if secret_raw:
+                print(f"      {lbl('Secret: ')} {yellow}{secret_raw}{reset}")
+            if commit_hash:
+                print(f"      {lbl('Commit: ')} {dim}{commit_hash}{reset}")
+            if author:
+                print(f"      {lbl('Author: ')} {dim}{author}{reset}")
+
+        print()
+
+    if clone_errors:
+        skipped = ", ".join(clone_errors[:5]) + ("…" if len(clone_errors) > 5 else "")
+        print(f"  {warn(f'{len(clone_errors)} repo(s) skipped (clone error): {skipped}')}\n")
+    else:
+        print()
 
 
 # ---------------------------------------------------------------------------
