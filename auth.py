@@ -32,7 +32,7 @@ def get_github_client() -> tuple[Github, str]:
     """
     bar = f"{bold}{cyan}{'═' * 42}{reset}"
     print(bar)
-    print(f"{bold}{cyan}{'  GitHub CLI — Authentication':^42}{reset}")
+    print(f"{bold}{cyan}{'  bamf — Authentication':^42}{reset}")
     print(bar)
     print(f"  Enter your Personal Access Token {dim}(input is hidden){reset}")
     print(f"  {dim}Generate one at: https://github.com/settings/tokens{reset}\n")

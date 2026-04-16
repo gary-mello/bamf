@@ -1,5 +1,5 @@
 """
-GitHub CLI — Entry point.
+bamf — Entry point.
 
 Run with:
     python main.py
