@@ -22,6 +22,7 @@ from github_ops import (
     audit_webhooks,
     clone_all_repos,
     create_repo,
+    edit_manifest_file,
     list_dependabot_alerts,
     list_repos,
     list_unprotected_repos,
@@ -53,6 +54,7 @@ def main() -> None:
     register_option("Search for Actions files",    lambda: search_actions_files(client))
     register_option("Repos without branch protection", lambda: list_unprotected_repos(client))
     register_option("Search for manifest files",       lambda: search_manifest_files(client))
+    register_option("Edit a manifest file",            lambda: edit_manifest_file(client))
     register_option("Scan repos for secrets",          lambda: scan_secrets(client, token))
     register_option("Security posture audit",          lambda: audit_security_posture(client))
     register_option("Dependabot vulnerability alerts", lambda: list_dependabot_alerts(client))
