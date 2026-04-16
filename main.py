@@ -13,7 +13,24 @@ import os
 import sys
 
 from auth import get_github_client
-from github_ops import clone_all_repos, create_repo, list_repos, scan_secrets, search_build_files, show_pat_info, search_actions_files, list_unprotected_repos, search_manifest_files
+from github_ops import (
+    audit_actions_secrets,
+    audit_branch_protection,
+    audit_collaborators,
+    audit_deploy_keys,
+    audit_security_posture,
+    audit_webhooks,
+    clone_all_repos,
+    create_repo,
+    list_dependabot_alerts,
+    list_repos,
+    list_unprotected_repos,
+    scan_secrets,
+    search_actions_files,
+    search_build_files,
+    search_manifest_files,
+    show_pat_info,
+)
 from menu import register_option, run_menu_loop
 
 
@@ -37,6 +54,13 @@ def main() -> None:
     register_option("Repos without branch protection", lambda: list_unprotected_repos(client))
     register_option("Search for manifest files",       lambda: search_manifest_files(client))
     register_option("Scan repos for secrets",          lambda: scan_secrets(client, token))
+    register_option("Security posture audit",          lambda: audit_security_posture(client))
+    register_option("Dependabot vulnerability alerts", lambda: list_dependabot_alerts(client))
+    register_option("Branch protection deep-dive",     lambda: audit_branch_protection(client))
+    register_option("Webhook audit",                   lambda: audit_webhooks(client))
+    register_option("Collaborator access audit",       lambda: audit_collaborators(client))
+    register_option("Deploy keys audit",               lambda: audit_deploy_keys(client))
+    register_option("Actions secrets audit",           lambda: audit_actions_secrets(client))
     register_option("Exit", None)
 
     run_menu_loop()

@@ -923,6 +923,655 @@ def scan_secrets(client: Github, token: str) -> None:
         print()
 
 
+def audit_security_posture(client: Github) -> None:
+    """Check which GitHub security features are enabled across all accessible repos."""
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Auditing security posture across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    # counters: feature → repos with it disabled
+    disabled: dict[str, int] = {
+        "Dependabot alerts": 0,
+        "Dependabot updates": 0,
+        "Secret scanning": 0,
+        "Push protection": 0,
+    }
+    repos_with_gaps = 0
+
+    def _status(obj, attr: str) -> str:
+        if obj is None:
+            return "n/a"
+        val = getattr(obj, attr, None)
+        if val is None:
+            return "n/a"
+        return getattr(val, "status", "n/a")
+
+    def _fmt(status: str) -> str:
+        if status == "enabled":
+            return f"{green}enabled {reset}"
+        if status in ("disabled", "not_set"):
+            return f"{red}disabled{reset}"
+        return f"{dim}n/a     {reset}"
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            dep_alerts = repo.get_vulnerability_alert()
+        except GithubException:
+            dep_alerts = None
+
+        saa = repo.security_and_analysis
+
+        dep_updates = _status(saa, "dependabot_security_updates")
+        secret_scan = _status(saa, "secret_scanning")
+        push_prot   = _status(saa, "secret_scanning_push_protection")
+
+        gap = (
+            dep_alerts is False
+            or dep_updates == "disabled"
+            or secret_scan == "disabled"
+            or push_prot == "disabled"
+        )
+        if gap:
+            repos_with_gaps += 1
+
+        if dep_alerts is False:
+            disabled["Dependabot alerts"] += 1
+        if dep_updates == "disabled":
+            disabled["Dependabot updates"] += 1
+        if secret_scan == "disabled":
+            disabled["Secret scanning"] += 1
+        if push_prot == "disabled":
+            disabled["Push protection"] += 1
+
+        print(" " * 60, end="\r")
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public {reset}"
+        dep_alerts_fmt = (
+            f"{green}enabled {reset}" if dep_alerts is True
+            else f"{red}disabled{reset}" if dep_alerts is False
+            else f"{dim}n/a     {reset}"
+        )
+
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]")
+        print(f"    {lbl('Dependabot alerts: ')}  {dep_alerts_fmt}    {lbl('Dependabot updates:')}  {_fmt(dep_updates)}")
+        print(f"    {lbl('Secret scanning:   ')}  {_fmt(secret_scan)}    {lbl('Push protection:   ')}  {_fmt(push_prot)}")
+        print()
+
+    summary_parts = [f"{v} repo(s) missing {k}" for k, v in disabled.items() if v > 0]
+    if not summary_parts:
+        print(f"  {success('All repos have all security features enabled.')}\n")
+    else:
+        print(f"  {warn(f'{repos_with_gaps} of {total} repo(s) have security gaps:')}")
+        for part in summary_parts:
+            print(f"    {dim}- {part}{reset}")
+        print()
+
+
+def list_dependabot_alerts(client: Github) -> None:
+    """Fetch open Dependabot CVE alerts across all accessible repos, grouped by severity."""
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Checking Dependabot alerts across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    sev_color = {"critical": red, "high": red, "medium": yellow, "low": cyan}
+    total_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    repos_hit = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            alerts = list(repo.get_dependabot_alerts(state="open"))
+        except GithubException as exc:
+            if exc.status in (403, 404):
+                continue
+            if exc.status in (429,):
+                _handle_rate_limit(client, exc)
+                return
+            continue
+
+        if not alerts:
+            continue
+
+        repos_hit += 1
+        print(" " * 60, end="\r")
+
+        by_sev: dict[str, list] = {"critical": [], "high": [], "medium": [], "low": []}
+        for alert in alerts:
+            sev = (alert.security_advisory.severity or "low").lower()
+            by_sev.setdefault(sev, []).append(alert)
+            if sev in total_counts:
+                total_counts[sev] += 1
+
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]  {dim}{len(alerts)} alert{'s' if len(alerts) != 1 else ''}{reset}")
+        print(f"    {lbl('URL:')}  {dim}{repo.html_url}{reset}")
+
+        for sev in ("critical", "high", "medium", "low"):
+            if not by_sev.get(sev):
+                continue
+            col = sev_color.get(sev, dim)
+            for alert in by_sev[sev]:
+                pkg   = alert.dependency.package.name if alert.dependency and alert.dependency.package else "unknown"
+                mpath = alert.dependency.manifest_path if alert.dependency else ""
+                cve   = alert.security_advisory.cve_id or ""
+                summary = _truncate(alert.security_advisory.summary or "", 70)
+                badge = f"{col}[{sev.upper():8}]{reset}"
+                print(f"    {badge}  {bold}{pkg}{reset}  {dim}{cve}{reset}")
+                print(f"             {dim}{summary}{reset}")
+                if mpath:
+                    print(f"             {lbl('Manifest:')} {dim}{mpath}{reset}")
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_hit == 0:
+        print(f"  {success('No open Dependabot alerts found.')}\n")
+    else:
+        parts = [f"{v} {k}" for k, v in total_counts.items() if v > 0]
+        print(f"  {warn(f'Open alerts: {", ".join(parts)} — across {repos_hit} of {total} repo(s).')}\n")
+
+
+def audit_branch_protection(client: Github) -> None:
+    """Show detailed branch protection rules for every repo, flagging dangerous configs."""
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Auditing branch protection across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    unprotected = 0
+    flagged = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            branch = repo.get_branch(repo.default_branch)
+        except GithubException:
+            continue
+
+        print(" " * 60, end="\r")
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]  {dim}branch: {repo.default_branch}{reset}")
+
+        if not branch.protected:
+            unprotected += 1
+            print(f"    {red}[!] No branch protection enabled{reset}\n")
+            continue
+
+        try:
+            prot = branch.get_protection()
+        except GithubException:
+            print(f"    {dim}(protection details unavailable — insufficient access){reset}\n")
+            continue
+
+        issues: list[str] = []
+
+        # Enforce admins
+        try:
+            enforce = prot.enforce_admins
+            enforce_on = getattr(enforce, "enabled", False) if enforce else False
+        except Exception:
+            enforce_on = False
+        enforce_fmt = f"{green}yes{reset}" if enforce_on else f"{red}no{reset}"
+        if not enforce_on:
+            issues.append("admins can bypass rules")
+
+        # Required PR reviews
+        rpr = prot.required_pull_request_reviews
+        if rpr:
+            approvals = getattr(rpr, "required_approving_review_count", 0) or 0
+            dismiss   = getattr(rpr, "dismiss_stale_reviews", False)
+            codeowner = getattr(rpr, "require_code_owner_reviews", False)
+            apr_fmt   = f"{green}{approvals}{reset}" if approvals >= 1 else f"{red}{approvals}{reset}"
+            if approvals == 0:
+                issues.append("0 required approvals")
+        else:
+            approvals = 0
+            dismiss   = False
+            codeowner = False
+            apr_fmt   = f"{red}none{reset}"
+            issues.append("no PR review requirement")
+
+        # Status checks
+        rsc = prot.required_status_checks
+        if rsc:
+            strict_fmt = f"{green}yes{reset}" if rsc.strict else f"{yellow}no{reset}"
+            checks_fmt = f"{dim}{len(rsc.contexts)} check(s){reset}"
+        else:
+            strict_fmt = f"{dim}n/a{reset}"
+            checks_fmt = f"{dim}none{reset}"
+
+        # Force push / deletions
+        try:
+            fp = prot.allow_force_pushes
+            fp_allowed = getattr(fp, "enabled", False) if fp else False
+        except Exception:
+            fp_allowed = False
+        try:
+            ad = prot.allow_deletions
+            del_allowed = getattr(ad, "enabled", False) if ad else False
+        except Exception:
+            del_allowed = False
+
+        fp_fmt  = f"{red}allowed{reset}" if fp_allowed else f"{green}blocked{reset}"
+        del_fmt = f"{red}allowed{reset}" if del_allowed else f"{green}blocked{reset}"
+        if fp_allowed:
+            issues.append("force pushes allowed")
+        if del_allowed:
+            issues.append("branch deletions allowed")
+
+        if issues:
+            flagged += 1
+
+        print(f"    {lbl('Enforce admins:    ')}  {enforce_fmt}    {lbl('Required approvals:')}  {apr_fmt}")
+        print(f"    {lbl('Dismiss stale:     ')}  {'yes' if dismiss else 'no':3}        {lbl('Require CODEOWNERS:')}  {'yes' if codeowner else 'no'}")
+        print(f"    {lbl('Status checks:     ')}  {checks_fmt}  {lbl('Up-to-date branch: ')}  {strict_fmt}")
+        print(f"    {lbl('Force pushes:      ')}  {fp_fmt}    {lbl('Branch deletions:  ')}  {del_fmt}")
+        if issues:
+            print(f"    {yellow}Issues: {', '.join(issues)}{reset}")
+        print()
+
+    print(" " * 60, end="\r")
+    print(f"  {success(f'{total - unprotected} of {total} repo(s) have branch protection.')}")
+    if flagged:
+        print(f"  {warn(f'{flagged} protected repo(s) have configuration issues.')}")
+    if unprotected:
+        print(f"  {warn(f'{unprotected} repo(s) have no protection at all.')}")
+    print()
+
+
+def audit_webhooks(client: Github) -> None:
+    """List all webhooks across repos and flag insecure configurations."""
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Scanning webhooks across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    total_hooks = 0
+    flagged_hooks = 0
+    repos_hit = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            hooks = list(repo.get_hooks())
+        except GithubException as exc:
+            if exc.status in (403, 404):
+                continue
+            continue
+
+        if not hooks:
+            continue
+
+        repos_hit += 1
+        total_hooks += len(hooks)
+        print(" " * 60, end="\r")
+
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]  {dim}{len(hooks)} webhook{'s' if len(hooks) != 1 else ''}{reset}")
+
+        for hook in hooks:
+            cfg         = hook.config or {}
+            url         = cfg.get("url", "(no url)")
+            insecure    = cfg.get("insecure_ssl", "0") == "1"
+            has_secret  = bool(cfg.get("secret"))
+            active      = hook.active
+            updated     = hook.updated_at.strftime("%Y-%m-%d") if hook.updated_at else "unknown"
+            events_str  = ", ".join(sorted(hook.events)[:5])
+            if len(hook.events) > 5:
+                events_str += f" +{len(hook.events) - 5} more"
+
+            flags: list[str] = []
+            if not url.startswith("https://"):
+                flags.append(f"{red}[HTTP — unencrypted]{reset}")
+                flagged_hooks += 1
+            if insecure:
+                flags.append(f"{red}[SSL not verified]{reset}")
+                flagged_hooks += 1
+            if not has_secret:
+                flags.append(f"{yellow}[no HMAC secret]{reset}")
+                flagged_hooks += 1
+            if not active:
+                flags.append(f"{dim}[inactive]{reset}")
+
+            url_col = red if (not url.startswith("https://") or insecure) else cyan
+            print(f"\n    {url_col}{_truncate(url, 70)}{reset}")
+            print(f"    {lbl('Active:')} {'yes' if active else f'{dim}no{reset}'}   {lbl('Updated:')} {dim}{updated}{reset}   {lbl('Events:')} {dim}{events_str}{reset}")
+            if flags:
+                print(f"    {' '.join(flags)}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_hit == 0:
+        print(f"  {success('No webhooks found in any repository.')}\n")
+    else:
+        print(f"  {success(f'Found {total_hooks} webhook(s) across {repos_hit} of {total} repo(s).')}")
+        if flagged_hooks:
+            print(f"  {warn(f'{flagged_hooks} flag(s) raised (HTTP, no SSL verification, or no HMAC secret).')}")
+        print()
+
+
+def audit_collaborators(client: Github) -> None:
+    """List outside collaborators and pending invitations per repo, flagging elevated access."""
+    from datetime import datetime, timezone as _tz
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Auditing collaborator access across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    now = datetime.now(tz=_tz.utc)
+    total_outside = 0
+    elevated_count = 0
+    repos_hit = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            outside = list(repo.get_collaborators(affiliation="outside"))
+        except GithubException as exc:
+            if exc.status in (403, 404):
+                continue
+            continue
+
+        try:
+            invites = list(repo.get_pending_invitations())
+        except GithubException:
+            invites = []
+
+        if not outside and not invites:
+            continue
+
+        repos_hit += 1
+        total_outside += len(outside)
+        print(" " * 60, end="\r")
+
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]")
+
+        if outside:
+            print(f"    {lbl('Outside collaborators:')}  {dim}{len(outside)}{reset}")
+            for user in outside:
+                try:
+                    perm = repo.get_collaborator_permission(user)
+                except GithubException:
+                    perm = "unknown"
+
+                if perm in ("admin", "write"):
+                    perm_fmt = f"{red}{perm}{reset}"
+                    elevated_count += 1
+                elif perm == "read":
+                    perm_fmt = f"{green}{perm}{reset}"
+                else:
+                    perm_fmt = f"{dim}{perm}{reset}"
+
+                print(f"      {bold}{user.login}{reset}  {lbl('perm:')} {perm_fmt}  {dim}{user.html_url}{reset}")
+
+        if invites:
+            print(f"    {lbl('Pending invitations:')}  {dim}{len(invites)}{reset}")
+            for inv in invites:
+                invitee = inv.invitee.login if inv.invitee else "(unknown)"
+                role    = inv.role or "unknown"
+                age_days = (now - inv.created_at.replace(tzinfo=_tz.utc)).days if inv.created_at else 0
+                stale   = age_days > 30
+                age_fmt = f"{yellow}{age_days}d old{reset}" if stale else f"{dim}{age_days}d old{reset}"
+                role_fmt = f"{red}{role}{reset}" if role in ("admin", "write") else f"{dim}{role}{reset}"
+                stale_tag = f"  {yellow}[stale]{reset}" if stale else ""
+                print(f"      {bold}{invitee}{reset}  {lbl('role:')} {role_fmt}  {age_fmt}{stale_tag}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_hit == 0:
+        print(f"  {success('No outside collaborators or pending invitations found.')}\n")
+    else:
+        print(f"  {success(f'Found {total_outside} outside collaborator(s) across {repos_hit} of {total} repo(s).')}")
+        if elevated_count:
+            print(f"  {warn(f'{elevated_count} outside collaborator(s) have admin or write access.')}")
+        print()
+
+
+def audit_deploy_keys(client: Github) -> None:
+    """List all deploy keys across repos, flagging write-access and unused keys."""
+    from datetime import datetime, timezone as _tz
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Auditing deploy keys across {bold}{total}{reset}{cyan} repo(s)...{reset}\n")
+
+    now = datetime.now(tz=_tz.utc)
+    total_keys = 0
+    flagged_keys = 0
+    repos_hit = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            keys = list(repo.get_keys())
+        except GithubException as exc:
+            if exc.status in (403, 404):
+                continue
+            continue
+
+        if not keys:
+            continue
+
+        repos_hit += 1
+        total_keys += len(keys)
+        print(" " * 60, end="\r")
+
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]  {dim}{len(keys)} key{'s' if len(keys) != 1 else ''}{reset}")
+
+        for key in keys:
+            read_only   = getattr(key, "read_only", True)
+            verified    = getattr(key, "verified", False)
+            created_at  = getattr(key, "created_at", None)
+            last_used   = getattr(key, "last_used_at", None)
+            title       = key.title or "(untitled)"
+
+            age_days = (now - created_at.replace(tzinfo=_tz.utc)).days if created_at else 0
+            created_fmt = created_at.strftime("%Y-%m-%d") if created_at else "unknown"
+
+            flags: list[str] = []
+            if not read_only:
+                flags.append(f"{red}[write access]{reset}")
+                flagged_keys += 1
+            if last_used is None:
+                flags.append(f"{yellow}[never used]{reset}")
+                flagged_keys += 1
+            elif age_days > 365:
+                last_used_days = (now - last_used.replace(tzinfo=_tz.utc)).days if last_used else age_days
+                if last_used_days > 180:
+                    flags.append(f"{yellow}[inactive {last_used_days}d]{reset}")
+                    flagged_keys += 1
+
+            access_fmt = f"{red}read/write{reset}" if not read_only else f"{green}read-only {reset}"
+            verif_fmt  = f"{green}verified{reset}" if verified else f"{dim}unverified{reset}"
+            print(f"\n    {bold}{title}{reset}")
+            print(f"    {lbl('Access:')} {access_fmt}   {lbl('Verified:')} {verif_fmt}   {lbl('Created:')} {dim}{created_fmt}{reset}")
+            if flags:
+                print(f"    {' '.join(flags)}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_hit == 0:
+        print(f"  {success('No deploy keys found in any repository.')}\n")
+    else:
+        print(f"  {success(f'Found {total_keys} deploy key(s) across {repos_hit} of {total} repo(s).')}")
+        if flagged_keys:
+            print(f"  {warn(f'{flagged_keys} flag(s) raised (write access, never used, or long inactive).')}")
+        print()
+
+
+def audit_actions_secrets(client: Github) -> None:
+    """List GitHub Actions secrets across all repos (names only; values are never exposed)."""
+    from datetime import datetime, timezone as _tz
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        msg = exc.data.get("message", str(exc))
+        print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    if not repos:
+        print(f"\n  {warn('No repositories found.')}\n")
+        return
+
+    total = len(repos)
+    print(f"\n{cyan}Auditing Actions secrets across {bold}{total}{reset}{cyan} repo(s)...{reset}")
+    print(f"  {dim}(secret names only — values are never exposed by the GitHub API){reset}\n")
+
+    now = datetime.now(tz=_tz.utc)
+    total_secrets = 0
+    stale_count = 0
+    repos_hit = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  {dim}Checking ({i}/{total}): {repo.name} ...{reset}", end="\r", flush=True)
+
+        try:
+            secrets = list(repo.get_secrets())
+        except GithubException as exc:
+            if exc.status in (403, 404):
+                continue
+            continue
+
+        if not secrets:
+            continue
+
+        repos_hit += 1
+        total_secrets += len(secrets)
+        print(" " * 60, end="\r")
+
+        vis = f"{yellow}private{reset}" if repo.private else f"{green}public{reset}"
+        print(f"  {bold}{white}{repo.full_name}{reset}  [{vis}]  {dim}{len(secrets)} secret{'s' if len(secrets) != 1 else ''}{reset}")
+
+        for secret in secrets:
+            name       = secret.name
+            created_at = getattr(secret, "created_at", None)
+            updated_at = getattr(secret, "updated_at", None)
+
+            created_fmt = created_at.strftime("%Y-%m-%d") if created_at else "unknown"
+            updated_fmt = updated_at.strftime("%Y-%m-%d") if updated_at else "unknown"
+
+            stale = False
+            if updated_at:
+                days_since = (now - updated_at.replace(tzinfo=_tz.utc)).days
+                stale = days_since > 365
+                if stale:
+                    stale_count += 1
+
+            stale_tag = f"  {yellow}[not rotated in {days_since}d]{reset}" if stale else ""
+            name_col  = yellow if stale else cyan
+            print(f"    {name_col}{name}{reset}  {lbl('created:')} {dim}{created_fmt}{reset}  {lbl('updated:')} {dim}{updated_fmt}{reset}{stale_tag}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_hit == 0:
+        print(f"  {success('No Actions secrets found in any repository.')}\n")
+    else:
+        print(f"  {success(f'Found {total_secrets} secret(s) across {repos_hit} of {total} repo(s).')}")
+        if stale_count:
+            print(f"  {warn(f'{stale_count} secret(s) have not been rotated in over a year.')}")
+        print()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
