@@ -1,0 +1,340 @@
+"""
+GitHub API operations.
+
+Each function accepts an authenticated Github client as its first argument
+and prints results directly to the terminal.
+"""
+
+import os
+import shutil
+import subprocess
+from datetime import timezone
+
+from github import Github, GithubException
+import requests
+
+
+def list_repos(client: Github) -> None:
+    """List all repos accessible to the authenticated user, sorted by most recently updated."""
+    print("\nFetching repositories...\n")
+
+    try:
+        user = client.get_user()
+        repos = user.get_repos(sort="updated", direction="desc")
+
+        # Column widths
+        COL_NUM   = 4
+        COL_NAME  = 30
+        COL_VIS   = 10
+        COL_LANG  = 16
+        COL_DESC  = 50
+
+        header = (
+            f"{'#':<{COL_NUM}} "
+            f"{'Name':<{COL_NAME}} "
+            f"{'Visibility':<{COL_VIS}} "
+            f"{'Language':<{COL_LANG}} "
+            f"{'Description':<{COL_DESC}}"
+        )
+        divider = "-" * len(header)
+
+        print(header)
+        print(divider)
+
+        count = 0
+        for repo in repos:
+            count += 1
+            name = _truncate(repo.name, COL_NAME)
+            visibility = "private" if repo.private else "public"
+            language = repo.language or "-"
+            description = _truncate(repo.description or "", COL_DESC)
+
+            print(
+                f"{count:<{COL_NUM}} "
+                f"{name:<{COL_NAME}} "
+                f"{visibility:<{COL_VIS}} "
+                f"{language:<{COL_LANG}} "
+                f"{description:<{COL_DESC}}"
+            )
+
+        print(divider)
+        print(f"\n  Total: {count} repo(s)\n")
+
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+
+
+def clone_all_repos(client: Github, token: str) -> None:
+    """Clone all repos accessible to the authenticated user into a local directory."""
+    default_dir = os.path.join(os.getcwd(), "cloned_repos")
+    raw = input(f"\nDestination directory [{default_dir}]: ").strip()
+    dest = raw if raw else default_dir
+
+    if not shutil.which("git"):
+        print("\n  Error: 'git' was not found on your PATH. Please install git and try again.\n")
+        return
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        return
+
+    if not repos:
+        print("\n  No repositories found.\n")
+        return
+
+    os.makedirs(dest, exist_ok=True)
+    total = len(repos)
+    cloned = skipped = failed = 0
+
+    print(f"\nCloning {total} repo(s) into: {dest}\n")
+
+    for i, repo in enumerate(repos, start=1):
+        repo_dir = os.path.join(dest, repo.name)
+        prefix = f"  ({i}/{total}) {repo.name}"
+
+        if os.path.isdir(repo_dir):
+            print(f"{prefix} — skipped (directory already exists)")
+            skipped += 1
+            continue
+
+        # Embed token in HTTPS URL for authenticated cloning (works for public + private repos)
+        owner = repo.owner.login
+        clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo.name}.git"
+
+        result = subprocess.run(
+            ["git", "clone", "--quiet", clone_url, repo_dir],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            visibility = "private" if repo.private else "public"
+            print(f"{prefix} — cloned  [{visibility}]")
+            cloned += 1
+        else:
+            err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
+            print(f"{prefix} — FAILED: {err}")
+            failed += 1
+
+    print(f"\n  Done. Cloned: {cloned}  |  Skipped: {skipped}  |  Failed: {failed}\n")
+
+
+def create_repo(client: Github) -> None:
+    """Interactively create a new GitHub repository."""
+    print()
+
+    # --- Name ---
+    while True:
+        name = input("  Repository name: ").strip()
+        if not name:
+            print("  Name cannot be empty. Please try again.")
+            continue
+        if " " in name:
+            print("  Name cannot contain spaces (use hyphens or underscores). Please try again.")
+            continue
+        break
+
+    # --- Visibility ---
+    while True:
+        vis = input("  Visibility — (p)ublic or (r)ivate? [private]: ").strip().lower()
+        if vis in ("", "r", "private"):
+            private = True
+            break
+        if vis in ("p", "public"):
+            private = False
+            break
+        print("  Please enter 'p' for public or 'r' for private.")
+
+    # --- Description (optional) ---
+    description = input("  Description (optional, press Enter to skip): ").strip()
+
+    print(f"\n  Creating {'private' if private else 'public'} repo '{name}'...")
+
+    try:
+        user = client.get_user()
+        repo = user.create_repo(
+            name,
+            private=private,
+            description=description or "",
+            auto_init=False,
+        )
+        print(f"\n  Repository created successfully!")
+        print(f"  Name:       {repo.full_name}")
+        print(f"  Visibility: {'private' if repo.private else 'public'}")
+        print(f"  Clone URL:  {repo.clone_url}")
+        print(f"  SSH URL:    {repo.ssh_url}\n")
+
+    except GithubException as exc:
+        if exc.status == 422:
+            errors = exc.data.get("errors", [])
+            msg = errors[0].get("message", "invalid name or repo already exists") if errors else "invalid name or repo already exists"
+            print(f"\n  Could not create repo: {msg}\n")
+        else:
+            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+
+
+def search_build_files(client: Github) -> None:
+    """Scan all accessible repos for build/CI files and report findings."""
+
+    # Map of filename → build system label (checked against root directory listing)
+    BUILD_FILES: dict[str, str] = {
+        "Makefile":           "Make",
+        "makefile":           "Make",
+        "GNUmakefile":        "Make (GNU)",
+        "CMakeLists.txt":     "CMake",
+        "pom.xml":            "Maven",
+        "build.gradle":       "Gradle",
+        "build.gradle.kts":   "Gradle (Kotlin DSL)",
+        "settings.gradle":    "Gradle (multi-project)",
+        "build.xml":          "Ant",
+        "package.json":       "npm / Node",
+        "Cargo.toml":         "Cargo (Rust)",
+        "go.mod":             "Go Modules",
+        "setup.py":           "Python setuptools",
+        "pyproject.toml":     "Python PEP 517",
+        "setup.cfg":          "Python setuptools (cfg)",
+        "tox.ini":            "tox (Python testing)",
+        "Dockerfile":         "Docker",
+        "docker-compose.yml": "Docker Compose",
+        "docker-compose.yaml":"Docker Compose",
+        "Rakefile":           "Rake (Ruby)",
+        "Gemfile":            "Bundler (Ruby)",
+        "meson.build":        "Meson",
+        "Justfile":           "Just",
+        "justfile":           "Just",
+        "Taskfile.yml":       "Task",
+        "Taskfile.yaml":      "Task",
+    }
+
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        return
+
+    if not repos:
+        print("\n  No repositories found.\n")
+        return
+
+    total = len(repos)
+    print(f"\nScanning {total} repo(s) for build files...\n")
+
+    hits = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  Checking ({i}/{total}): {repo.name} ...", end="\r", flush=True)
+
+        # --- Derive PAT access level for this repo ---
+        perms = repo.permissions
+        if perms is None:
+            access = "unknown"
+        elif perms.admin:
+            access = "admin"
+        elif perms.push:
+            access = "write"
+        elif perms.pull:
+            access = "read"
+        else:
+            access = "none"
+
+        # --- Fetch root directory contents (single API call) ---
+        try:
+            root_contents = repo.get_contents("")
+        except GithubException:
+            # Empty repo or permission denied — skip silently
+            continue
+
+        root_names = {item.name: item for item in root_contents}
+
+        # --- Match against known build file names ---
+        found: list[str] = []
+        for filename, label in BUILD_FILES.items():
+            if filename in root_names:
+                found.append(f"    {filename:<30}  {label}")
+
+        # --- Check .github/workflows for GitHub Actions ---
+        actions_count = 0
+        if ".github" in root_names:
+            try:
+                workflows = repo.get_contents(".github/workflows")
+                yml_files = [
+                    f for f in (workflows if isinstance(workflows, list) else [workflows])
+                    if f.name.endswith((".yml", ".yaml"))
+                ]
+                actions_count = len(yml_files)
+                if actions_count:
+                    found.append(f"    .github/workflows/{'*':<22}  GitHub Actions  ({actions_count} workflow{'s' if actions_count != 1 else ''})")
+            except GithubException:
+                pass
+
+        if not found:
+            continue
+
+        # --- Print repo header ---
+        hits += 1
+        print(" " * 60, end="\r")  # clear the progress line
+
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
+        fork_tag = "  [fork]" if repo.fork else ""
+        visibility = "private" if repo.private else "public"
+        stars = f"★ {repo.stargazers_count}" if repo.stargazers_count else "★ 0"
+        open_issues = f"{repo.open_issues_count} open issue{'s' if repo.open_issues_count != 1 else ''}"
+        branch = repo.default_branch
+
+        print(f"  {repo.full_name}{fork_tag}")
+        print(f"    Visibility:  {visibility}   |   Access: {access}   |   Branch: {branch}")
+        print(f"    Language:    {repo.language or '-':<20}  {stars}   |   {open_issues}")
+        print(f"    Last push:   {pushed}")
+        print(f"    Build files:")
+        for line in found:
+            print(line)
+        print()
+
+    # Clear any leftover progress line
+    print(" " * 60, end="\r")
+
+    if hits == 0:
+        print("  No build files found in any accessible repository.\n")
+    else:
+        print(f"  Found build files in {hits} of {total} repo(s).\n")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _truncate(text: str, max_len: int) -> str:
+    """Truncate text to max_len characters, appending '…' if cut."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _handle_rate_limit(client: Github, exc: GithubException) -> None:
+    """Print a helpful rate-limit message including when the limit resets."""
+    try:
+        rate = client.get_rate_limit().core
+        reset_utc = rate.reset.replace(tzinfo=timezone.utc)
+        print(
+            f"\n  Rate limit exceeded. Limit resets at {reset_utc.strftime('%H:%M:%S UTC')}. "
+            f"({rate.remaining} requests remaining)\n"
+        )
+    except Exception:
+        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
