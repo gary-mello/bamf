@@ -2,6 +2,7 @@
 Menu system — registry pattern.
 
 Usage in main.py:
+    register_section("RECON")
     register_option("List all repos", lambda: list_repos(client))
     register_option("Exit", None)   # None signals the exit option
     run_menu_loop()
@@ -9,14 +10,26 @@ Usage in main.py:
 Adding a new feature requires exactly one register_option() call.
 """
 
+import os
 from typing import Callable, Optional
 
-from colors import bold, cyan, yellow, green, red, dim, reset, white
+from colors import bold, cyan, yellow, green, red, dim, reset, white, magenta
 
 
-# Internal registry: list of (label, handler | None)
-# None handler = exit sentinel
-_options: list[tuple[str, Optional[Callable]]] = []
+def _clear() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+# Sentinel for section header entries (not selectable, not numbered)
+_SECTION = object()
+
+# Internal registry: list of (label, handler | None | _SECTION)
+_options: list[tuple[str, object]] = []
+
+
+def register_section(title: str) -> None:
+    """Register a section header. Displayed as a divider, not selectable."""
+    _options.append((title, _SECTION))
 
 
 def register_option(label: str, handler: Optional[Callable]) -> None:
@@ -28,15 +41,23 @@ def show_menu() -> None:
     """Print the numbered menu to stdout."""
     bar = f"{bold}{cyan}{'═' * 42}{reset}"
     print(bar)
-    print(f"{bold}{cyan}{'  bamf — Main Menu':^42}{reset}")
+    print(f"{bold}{cyan}{'╔╗ ╔═╗╔╦╗╔═╗':^42}{reset}")
+    print(f"{bold}{cyan}{'╠╩╗╠═╣║║║╠╣ ':^42}{reset}")
+    print(f"{bold}{cyan}{'╚═╝╩ ╩╩ ╩╚  ':^42}{reset}")
     print(bar)
-    for i, (label, handler) in enumerate(_options, start=1):
-        if handler is None:
-            # Exit option — muted
-            print(f"  {dim}{i}. {label}{reset}")
+
+    num = 1
+    for label, handler in _options:
+        if handler is _SECTION:
+            print(f"\n  {bold}{magenta}{label}{reset}  {dim}{'·' * (36 - len(label))}{reset}")
+        elif handler is None:
+            print(f"  {dim}{num}. {label}{reset}")
+            num += 1
         else:
-            print(f"  {yellow}{i}.{reset} {white}{label}{reset}")
-    print(bar)
+            print(f"  {yellow}{num}.{reset} {white}{label}{reset}")
+            num += 1
+
+    print(f"\n{bar}")
 
 
 def dispatch(choice: int) -> bool:
@@ -46,18 +67,25 @@ def dispatch(choice: int) -> bool:
         False if the selected option is the Exit sentinel (handler is None),
         True otherwise.
     """
-    label, handler = _options[choice - 1]
-    if handler is None:
-        return False  # exit signal
-    handler()
-    return True
+    num = 0
+    for label, handler in _options:
+        if handler is _SECTION:
+            continue
+        num += 1
+        if num == choice:
+            if handler is None:
+                return False
+            handler()
+            return True
+    return False
 
 
 def run_menu_loop() -> None:
     """Display the menu and process input until the user chooses Exit."""
-    n = len(_options)
+    n = sum(1 for _, handler in _options if handler is not _SECTION)
 
     while True:
+        _clear()
         show_menu()
         raw = input(f"\n{bold}Select an option (1-{n}):{reset} ").strip()
 
@@ -75,3 +103,4 @@ def run_menu_loop() -> None:
         if not keep_running:
             print(f"\n{bold}{green}Goodbye!{reset}\n")
             break
+        input(f"\n{dim}Press Enter to return to menu...{reset}")

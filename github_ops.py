@@ -1990,7 +1990,7 @@ def audit_actions_secrets(client: Github) -> None:
 
 def nuke_a_branch(client: Github) -> None:
     """Scan repos with admin access that have branch protection, then strip protection from a selected one."""
-    print(f"\n{bold}{red}Nuke a Branch{reset} {dim}(remove branch protections){reset}\n")
+    print(f"\n{bold}{red}Nuke Branch Protections{reset}\n")
 
     # --- Fetch repos ---
     try:
