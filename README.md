@@ -13,6 +13,15 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Repos without branch protection** — Identify repos missing branch protection rules
 - **Search for manifest files** — Detect dependency manifests and lockfiles across 40+ ecosystems
 - **Scan repos for secrets** — Detect leaked secrets (API keys, tokens, credentials) across all repos using [gitleaks](https://github.com/gitleaks/gitleaks)
+- **Security posture audit** — Check whether Dependabot alerts, secret scanning, and push protection are enabled on each repo
+- **Dependabot vulnerability alerts** — List open CVE alerts by severity (critical/high/medium/low) across all repos
+- **Branch protection deep-dive** — Inspect detailed branch protection rules and flag dangerous configs (force push allowed, 0 required reviewers, admins exempt, etc.)
+- **Webhook audit** — Enumerate all webhooks and flag insecure ones (HTTP URLs, no SSL verification, missing HMAC secret)
+- **Collaborator access audit** — List outside collaborators and pending invitations, flagging admin/write access and stale invites
+- **Deploy keys audit** — List all deploy keys, flagging read/write keys and ones that have never been used
+- **Actions secrets audit** — Surface GitHub Actions secret names (values are never exposed) and flag secrets not rotated in over a year
+
+> **Note:** Security audit features (Dependabot alerts, security posture, collaborators, webhooks, deploy keys, Actions secrets) require **admin access** to each repo. Repos where the PAT lacks sufficient permissions are silently skipped.
 
 ## Setup
 
