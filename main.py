@@ -73,8 +73,6 @@ def main() -> None:
     register_option("Nuke branch protections",         lambda: nuke_a_branch(client))
     register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client))
 
-    register_option("Exit", None)
-
     run_menu_loop()
 
 

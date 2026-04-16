@@ -51,13 +51,13 @@ def show_menu() -> None:
         if handler is _SECTION:
             print(f"\n  {bold}{magenta}{label}{reset}  {dim}{'·' * (36 - len(label))}{reset}")
         elif handler is None:
-            print(f"  {dim}{num}. {label}{reset}")
-            num += 1
+            pass  # exit is handled via [x], not a numbered option
         else:
             print(f"  {yellow}{num}.{reset} {white}{label}{reset}")
             num += 1
 
     print(f"\n{bar}")
+    print(f"  {dim}[x] exit{reset}")
 
 
 def dispatch(choice: int) -> bool:
@@ -82,12 +82,16 @@ def dispatch(choice: int) -> bool:
 
 def run_menu_loop() -> None:
     """Display the menu and process input until the user chooses Exit."""
-    n = sum(1 for _, handler in _options if handler is not _SECTION)
+    n = sum(1 for _, handler in _options if handler is not _SECTION and handler is not None)
 
     while True:
         _clear()
         show_menu()
         raw = input(f"\n{bold}Select an option (1-{n}):{reset} ").strip()
+
+        if raw.lower() == "x":
+            print(f"\n{bold}{green}Goodbye!{reset}\n")
+            break
 
         try:
             choice = int(raw)
@@ -99,8 +103,5 @@ def run_menu_loop() -> None:
             print(f"\n  {red}Please enter a number between 1 and {n}.{reset}\n")
             continue
 
-        keep_running = dispatch(choice)
-        if not keep_running:
-            print(f"\n{bold}{green}Goodbye!{reset}\n")
-            break
+        dispatch(choice)
         input(f"\n{dim}Press Enter to return to menu...{reset}")
