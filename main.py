@@ -67,7 +67,7 @@ def main() -> None:
     register_option("Collaborator access audit",       lambda: audit_collaborators(client))
     register_option("Deploy keys audit",               lambda: audit_deploy_keys(client))
     register_option("Actions secrets audit",           lambda: audit_actions_secrets(client))
-    register_option("Nuke a branch (remove branch protections)", lambda: nuke_a_branch(client))
+    register_option("Nuke branch protections", lambda: nuke_a_branch(client))
     register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client))
     register_option("Exit", None)
 
