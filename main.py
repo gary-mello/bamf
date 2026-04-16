@@ -21,6 +21,7 @@ from github_ops import (
     audit_security_posture,
     audit_webhooks,
     clone_all_repos,
+    clone_private_to_public,
     create_repo,
     edit_manifest_file,
     list_dependabot_alerts,
@@ -48,6 +49,7 @@ def main() -> None:
     # To add a new feature: import it from github_ops and add a register_option() line here.
     register_option("List all repos",              lambda: list_repos(client))
     register_option("Clone all repos",             lambda: clone_all_repos(client, token))
+    register_option("Clone private to public",     lambda: clone_private_to_public(client, token))
     register_option("Create a repo",               lambda: create_repo(client))
     register_option("Search for build files",      lambda: search_build_files(client))
     register_option("Show PAT info",               lambda: show_pat_info(client, token))

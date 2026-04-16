@@ -6,6 +6,7 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 
 - **List all repos** — View all accessible repos sorted by most recently updated
 - **Clone all repos** — Bulk clone every repo to a local directory
+- **Clone private to public** — Select a private repo, mirror its full history to a new public repo under the same account
 - **Create a repo** — Interactively create a new GitHub repository
 - **Search for build files** — Scan repos for build/CI configs across 26 build systems
 - **Show PAT info** — Display scopes and metadata for the active token
