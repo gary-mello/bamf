@@ -33,6 +33,12 @@ def get_github_client(token: str | None = None) -> tuple[Github, str]:
     Retries up to MAX_RETRIES times on bad credentials (interactive mode only).
     Exits with code 1 after exhausting retries or on unrecoverable errors.
     """
+    if sys.platform == "win32":
+        import os; os.system("cls")
+    else:
+        sys.stdout.write("\033[2J\033[3J\033[H")
+        sys.stdout.flush()
+
     bar = f"{bold}{cyan}{'═' * 42}{reset}"
 
     # ── Non-interactive: token supplied via flag ─────────────────────────────

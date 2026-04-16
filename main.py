@@ -46,7 +46,6 @@ def main() -> None:
     args, _ = parser.parse_known_args()
 
     client, token = get_github_client(token=args.token)
-    os.system("cls" if os.name == "nt" else "clear")
 
     # Register menu options — order determines numbering.
     # To add a new feature: import it from github_ops and add a register_option() line here.
