@@ -10,9 +10,14 @@ Usage in main.py:
 Adding a new feature requires exactly one register_option() call.
 """
 
+import os
 from typing import Callable, Optional
 
 from colors import bold, cyan, yellow, green, red, dim, reset, white, magenta
+
+
+def _clear() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 # Sentinel for section header entries (not selectable, not numbered)
@@ -80,6 +85,7 @@ def run_menu_loop() -> None:
     n = sum(1 for _, handler in _options if handler is not _SECTION)
 
     while True:
+        _clear()
         show_menu()
         raw = input(f"\n{bold}Select an option (1-{n}):{reset} ").strip()
 
@@ -97,3 +103,4 @@ def run_menu_loop() -> None:
         if not keep_running:
             print(f"\n{bold}{green}Goodbye!{reset}\n")
             break
+        input(f"\n{dim}Press Enter to return to menu...{reset}")
