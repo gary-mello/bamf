@@ -1988,6 +1988,89 @@ def audit_actions_secrets(client: Github) -> None:
         print()
 
 
+def nuke_repo(client: Github) -> None:
+    """List repos the user can delete (admin access) and permanently delete a selected one."""
+    print(f"\n{bold}{red}Nuke a Repo{reset} {dim}(permanent deletion){reset}\n")
+
+    # --- Fetch repos ---
+    try:
+        all_repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"\n  {err('Network error: unable to reach GitHub. Check your connection.')}\n")
+        return
+
+    # Only show repos where the user has admin access (required to delete)
+    deletable = [r for r in all_repos if r.permissions and r.permissions.admin]
+
+    if not deletable:
+        print(f"  {warn('No repositories found where you have admin (delete) access.')}\n")
+        return
+
+    # --- Display deletable repos ---
+    print(f"  {dim}{'#':<4}{'Repository':<40}{'Visibility':<12}{'Language':<20}{'Last pushed'}{reset}")
+    print(f"  {dim}{'─' * 84}{reset}")
+    for i, repo in enumerate(deletable, start=1):
+        vis_color = yellow if repo.private else green
+        vis_label = "private" if repo.private else "public"
+        lang = repo.language or ""
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "—"
+        print(
+            f"  {dim}{i:<4}{reset}"
+            f"{bold}{_truncate(repo.full_name, 38):<40}{reset}"
+            f"{vis_color}{vis_label:<12}{reset}"
+            f"{cyan}{lang:<20}{reset}"
+            f"{dim}{pushed}{reset}"
+        )
+
+    print()
+    raw = input(f"  {bold}Select repo number to delete{reset} {dim}(or 0 to cancel):{reset} ").strip()
+    if not raw.isdigit():
+        print(f"\n  {err('Invalid input. Enter a number.')}\n")
+        return
+    choice = int(raw)
+    if choice == 0:
+        print(f"\n  {muted('Cancelled.')}\n")
+        return
+    if choice < 1 or choice > len(deletable):
+        print(f"\n  {err(f'Selection out of range. Enter 1–{len(deletable)}.')}\n")
+        return
+
+    target = deletable[choice - 1]
+
+    # --- Strong confirmation: require typing the exact repo name ---
+    print()
+    print(f"  {bold}{red}┌─────────────────────────────────────────────────────────────────┐{reset}")
+    print(f"  {bold}{red}│  WARNING: This will PERMANENTLY delete '{target.name}'.{reset}")
+    print(f"  {bold}{red}│  This action cannot be undone. All code, issues, and history    │{reset}")
+    print(f"  {bold}{red}│  will be lost forever.                                          │{reset}")
+    print(f"  {bold}{red}└─────────────────────────────────────────────────────────────────┘{reset}")
+    print()
+    confirm = input(f"  Type the repository name {bold}{target.name}{reset} to confirm deletion: ").strip()
+
+    if confirm != target.name:
+        print(f"\n  {warn('Name did not match. Deletion cancelled.')}\n")
+        return
+
+    # --- Delete ---
+    print(f"\n  {dim}Deleting {target.full_name} ...{reset}")
+    try:
+        target.delete()
+        print(f"  {success(f'Repository {target.full_name} has been permanently deleted.')}\n")
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            msg = exc.data.get("message", str(exc))
+            print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
