@@ -316,6 +316,230 @@ def search_build_files(client: Github) -> None:
         print(f"  Found build files in {hits} of {total} repo(s).\n")
 
 
+def show_pat_info(client: Github, token: str) -> None:
+    """Display scopes, permissions, rate limits, and account details for the current PAT."""
+    print("\nFetching PAT information...\n")
+
+    SCOPE_DESCRIPTIONS: dict[str, str] = {
+        "repo":                  "Full control of private repositories",
+        "repo:status":           "Access commit status",
+        "repo_deployment":       "Access deployment status",
+        "public_repo":           "Access public repositories",
+        "repo:invite":           "Access repository invitations",
+        "security_events":       "Read/write security events",
+        "admin:repo_hook":       "Full control of repository hooks",
+        "write:repo_hook":       "Write repository hooks",
+        "read:repo_hook":        "Read repository hooks",
+        "admin:org":             "Full control of orgs, teams, and projects",
+        "write:org":             "Write org and team membership, projects",
+        "read:org":              "Read org and team membership, projects",
+        "admin:public_key":      "Full control of user public keys",
+        "write:public_key":      "Write user public keys",
+        "read:public_key":       "Read user public keys",
+        "admin:org_hook":        "Full control of organization hooks",
+        "gist":                  "Create gists",
+        "notifications":         "Access notifications",
+        "user":                  "Update all user data",
+        "read:user":             "Read all user profile data",
+        "user:email":            "Access user email addresses (read/write)",
+        "user:follow":           "Follow and unfollow users",
+        "project":               "Full control of user and org projects",
+        "read:project":          "Read access to user and org projects",
+        "delete_repo":           "Delete repositories",
+        "write:packages":        "Upload packages to GitHub Package Registry",
+        "read:packages":         "Download packages from GitHub Package Registry",
+        "delete:packages":       "Delete packages from GitHub Package Registry",
+        "admin:gpg_key":         "Full control of public user GPG keys",
+        "write:gpg_key":         "Write public user GPG keys",
+        "read:gpg_key":          "Read public user GPG keys",
+        "codespace":             "Full control of codespaces",
+        "workflow":              "Update GitHub Actions workflow files",
+        "admin:ssh_signing_key": "Full control of public user SSH signing keys",
+        "write:ssh_signing_key": "Write public user SSH signing keys",
+        "read:ssh_signing_key":  "Read public user SSH signing keys",
+    }
+
+    try:
+        # Hit /user with raw requests so we can read response headers
+        resp = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=10,
+        )
+
+        scopes_raw = resp.headers.get("X-OAuth-Scopes", "")
+        scopes = [s.strip() for s in scopes_raw.split(",") if s.strip()]
+
+        # Determine token type from its prefix
+        if token.startswith("github_pat_"):
+            token_type = "Fine-Grained PAT"
+        elif token.startswith("ghp_"):
+            token_type = "Classic PAT"
+        elif token.startswith("gho_"):
+            token_type = "OAuth Token"
+        elif token.startswith("ghs_"):
+            token_type = "GitHub App Installation Token"
+        else:
+            token_type = "Classic PAT (legacy format)"
+
+        user = client.get_user()
+
+        rate_resp = requests.get(
+            "https://api.github.com/rate_limit",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=10,
+        )
+        rate_resources = rate_resp.json().get("resources", {})
+
+        divider = "-" * 60
+        print(divider)
+        print("  Token Details")
+        print(divider)
+        print(f"  Type:          {token_type}")
+        print(f"  Prefix:        {token[:8]}{'*' * 10}  (first 8 chars shown)")
+        print()
+
+        print(divider)
+        print("  Account")
+        print(divider)
+        print(f"  Login:         {user.login}")
+        if user.name:
+            print(f"  Name:          {user.name}")
+        if user.email:
+            print(f"  Email:         {user.email}")
+        print(f"  Account type:  {'Organization' if user.type == 'Organization' else 'Personal'}")
+        if user.company:
+            print(f"  Company:       {user.company}")
+        if user.plan:
+            print(f"  GitHub plan:   {user.plan.name}")
+        print(f"  Public repos:  {user.public_repos}")
+        print(f"  Private repos: {user.total_private_repos or 0}")
+        print(f"  Followers:     {user.followers}  |  Following: {user.following}")
+        print()
+
+        print(divider)
+        if token_type == "Fine-Grained PAT":
+            print("  Permissions  (fine-grained — per-repository)")
+            print(divider)
+            print("  Fine-grained PATs use per-repository permissions rather than")
+            print("  global scopes. Permissions are not enumerable via the REST API.")
+            print("  Manage this token at: https://github.com/settings/tokens")
+        else:
+            print(f"  Scopes  ({len(scopes)} granted)")
+            print(divider)
+            if scopes:
+                for scope in scopes:
+                    desc = SCOPE_DESCRIPTIONS.get(scope, "")
+                    bullet = f"  • {scope:<28}"
+                    print(f"{bullet}  {desc}" if desc else bullet)
+            else:
+                print("  (none) — token has read-only access to public data only")
+        print()
+
+        print(divider)
+        print("  Rate Limits")
+        print(divider)
+
+        from datetime import datetime, timezone as tz
+
+        def _fmt_resource(res: dict) -> str:
+            remaining = res.get("remaining", "?")
+            limit = res.get("limit", "?")
+            reset_ts = res.get("reset")
+            reset_str = (
+                datetime.fromtimestamp(reset_ts, tz=tz.utc).strftime("%H:%M UTC")
+                if reset_ts else "unknown"
+            )
+            return f"{remaining:>6,} / {limit:,} remaining  (resets {reset_str})" if isinstance(remaining, int) else f"{remaining} / {limit}"
+
+        for label, key in [("Core API", "core"), ("Search API", "search"), ("GraphQL API", "graphql")]:
+            res = rate_resources.get(key)
+            if res is not None:
+                print(f"  {label:<14} {_fmt_resource(res)}")
+        print()
+
+    except GithubException as exc:
+        if exc.status in (403, 429):
+            _handle_rate_limit(client, exc)
+        else:
+            print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+
+
+def search_actions_files(client: Github) -> None:
+    """Scan all accessible repos for GitHub Actions workflow files and list them."""
+    try:
+        repos = list(client.get_user().get_repos(sort="updated", direction="desc"))
+    except GithubException as exc:
+        print(f"\n  GitHub error ({exc.status}): {exc.data.get('message', str(exc))}\n")
+        return
+    except requests.exceptions.ConnectionError:
+        print("\n  Network error: unable to reach GitHub. Check your connection.\n")
+        return
+
+    if not repos:
+        print("\n  No repositories found.\n")
+        return
+
+    total = len(repos)
+    print(f"\nScanning {total} repo(s) for GitHub Actions workflow files...\n")
+
+    total_workflows = 0
+    repos_with_actions = 0
+
+    for i, repo in enumerate(repos, start=1):
+        print(f"  Checking ({i}/{total}): {repo.name} ...", end="\r", flush=True)
+
+        try:
+            contents = repo.get_contents(".github/workflows")
+        except GithubException:
+            # Folder missing or permission denied — skip
+            continue
+
+        if not isinstance(contents, list):
+            contents = [contents]
+
+        yml_files = sorted(
+            [f for f in contents if f.name.endswith((".yml", ".yaml"))],
+            key=lambda f: f.name,
+        )
+
+        if not yml_files:
+            continue
+
+        repos_with_actions += 1
+        total_workflows += len(yml_files)
+
+        print(" " * 60, end="\r")  # clear progress line
+
+        visibility = "private" if repo.private else "public"
+        pushed = repo.pushed_at.strftime("%Y-%m-%d") if repo.pushed_at else "unknown"
+        wf_count = len(yml_files)
+        print(f"  {repo.full_name}  [{visibility}]  —  last push: {pushed}  —  {wf_count} workflow{'s' if wf_count != 1 else ''}")
+
+        for wf in yml_files:
+            print(f"    • {wf.name:<40}  {wf.path}")
+
+        print()
+
+    print(" " * 60, end="\r")
+
+    if repos_with_actions == 0:
+        print("  No GitHub Actions workflow files found in any accessible repository.\n")
+    else:
+        print(
+            f"  Found {total_workflows} workflow file{'s' if total_workflows != 1 else ''} "
+            f"across {repos_with_actions} of {total} repo(s).\n"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
