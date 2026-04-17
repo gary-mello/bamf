@@ -21,7 +21,21 @@ from colors import bold, cyan, green, red, yellow, reset, dim
 MAX_RETRIES = 3
 
 
-def get_github_client(token: str | None = None) -> tuple[Github, str]:
+def _fetch_scopes(token: str) -> set[str]:
+    """Return the set of OAuth scopes for a Classic PAT. Empty for Fine-Grained PATs."""
+    try:
+        resp = requests.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=10,
+        )
+        raw = resp.headers.get("X-OAuth-Scopes", "")
+        return {s.strip() for s in raw.split(",") if s.strip()}
+    except Exception:
+        return set()
+
+
+def get_github_client(token: str | None = None) -> tuple[Github, str, set[str]]:
     """Prompt for a GitHub PAT (or use a provided one), verify it, and return (Github client, raw token).
 
     If *token* is supplied (e.g. from --token CLI flag) the interactive prompt is skipped
@@ -29,6 +43,9 @@ def get_github_client(token: str | None = None) -> tuple[Github, str]:
 
     The raw token is returned so callers can use it for authenticated git operations
     (e.g. embedding it in an HTTPS clone URL).
+
+    Returns (Github client, raw token, set of OAuth scopes). Scopes are empty for
+    Fine-Grained PATs (which don't expose scopes via the API header).
 
     Retries up to MAX_RETRIES times on bad credentials (interactive mode only).
     Exits with code 1 after exhausting retries or on unrecoverable errors.
@@ -50,7 +67,7 @@ def get_github_client(token: str | None = None) -> tuple[Github, str]:
             client = Github(token)
             login = client.get_user().login
             print(f"\n  {green}{bold}Authenticated as: {login}{reset}\n")
-            return client, token
+            return client, token, _fetch_scopes(token)
         except GithubException as exc:
             if exc.status == 401:
                 print(f"  {red}Bad credentials in --token flag. Exiting.{reset}")
@@ -79,7 +96,7 @@ def get_github_client(token: str | None = None) -> tuple[Github, str]:
             client = Github(token)
             login = client.get_user().login  # verifies credentials immediately
             print(f"\n  {green}{bold}Authenticated as: {login}{reset}\n")
-            return client, token
+            return client, token, _fetch_scopes(token)
 
         except GithubException as exc:
             if exc.status == 401:

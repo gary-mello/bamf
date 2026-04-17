@@ -23,18 +23,18 @@ def _clear() -> None:
 # Sentinel for section header entries (not selectable, not numbered)
 _SECTION = object()
 
-# Internal registry: list of (label, handler | None | _SECTION)
-_options: list[tuple[str, object]] = []
+# Internal registry: list of (label, handler | None | _SECTION, disabled)
+_options: list[tuple[str, object, bool]] = []
 
 
 def register_section(title: str) -> None:
     """Register a section header. Displayed as a divider, not selectable."""
-    _options.append((title, _SECTION))
+    _options.append((title, _SECTION, False))
 
 
-def register_option(label: str, handler: Optional[Callable]) -> None:
+def register_option(label: str, handler: Optional[Callable], disabled: bool = False) -> None:
     """Register a menu option. Pass handler=None to mark it as the Exit option."""
-    _options.append((label, handler))
+    _options.append((label, handler, disabled))
 
 
 def show_menu() -> None:
@@ -47,17 +47,24 @@ def show_menu() -> None:
     print(bar)
 
     num = 1
-    for label, handler in _options:
+    any_disabled = False
+    for label, handler, disabled in _options:
         if handler is _SECTION:
             print(f"\n  {bold}{magenta}{label}{reset}  {dim}{'·' * (36 - len(label))}{reset}")
         elif handler is None:
             pass  # exit is handled via [x], not a numbered option
+        elif disabled:
+            print(f"  {dim}{num}. {label}  [no permission]{reset}")
+            num += 1
+            any_disabled = True
         else:
             print(f"  {yellow}{num}.{reset} {white}{label}{reset}")
             num += 1
 
     print(f"\n{bar}")
     print(f"  {dim}[x] exit{reset}")
+    if any_disabled:
+        print(f"\n  {dim}* Greyed-out features not available due to token permissions{reset}")
 
 
 def dispatch(choice: int) -> bool:
@@ -68,13 +75,16 @@ def dispatch(choice: int) -> bool:
         True otherwise.
     """
     num = 0
-    for label, handler in _options:
+    for label, handler, disabled in _options:
         if handler is _SECTION:
             continue
         num += 1
         if num == choice:
             if handler is None:
                 return False
+            if disabled:
+                print(f"\n  {dim}Token lacks required permissions for this feature.{reset}")
+                return True
             handler()
             return True
     return False
@@ -82,7 +92,7 @@ def dispatch(choice: int) -> bool:
 
 def run_menu_loop() -> None:
     """Display the menu and process input until the user chooses Exit."""
-    n = sum(1 for _, handler in _options if handler is not _SECTION and handler is not None)
+    n = sum(1 for _, handler, _ in _options if handler is not _SECTION and handler is not None)
 
     while True:
         _clear()
