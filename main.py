@@ -45,34 +45,40 @@ def main() -> None:
                         help="GitHub Personal Access Token (skips interactive prompt)")
     args, _ = parser.parse_known_args()
 
-    client, token = get_github_client(token=args.token)
+    client, token, scopes = get_github_client(token=args.token)
+
+    def no_perm(*required_any: str) -> bool:
+        """Return True (disabled) when scopes are known and none of the required ones are present."""
+        if not scopes:
+            return False
+        return not any(s in scopes for s in required_any)
 
     # Register menu options — order determines numbering.
     # To add a new feature: import it from github_ops and add a register_option() line here.
     register_section("RECON")
     register_option("List all repos",                  lambda: list_repos(client))
     register_option("Show PAT info",                   lambda: show_pat_info(client, token))
-    register_option("Search for build files",          lambda: search_build_files(client))
-    register_option("Search for Actions files",        lambda: search_actions_files(client))
-    register_option("Search for manifest files",       lambda: search_manifest_files(client))
-    register_option("Repos without branch protection", lambda: list_unprotected_repos(client))
-    register_option("Security posture audit",          lambda: audit_security_posture(client))
-    register_option("Dependabot vulnerability alerts", lambda: list_dependabot_alerts(client))
-    register_option("Branch protection deep-dive",     lambda: audit_branch_protection(client))
-    register_option("Webhook audit",                   lambda: audit_webhooks(client))
-    register_option("Collaborator access audit",       lambda: audit_collaborators(client))
-    register_option("Deploy keys audit",               lambda: audit_deploy_keys(client))
-    register_option("Actions secrets audit",           lambda: audit_actions_secrets(client))
-    register_option("Scan repos for secrets",          lambda: scan_secrets(client, token))
+    register_option("Search for build files",          lambda: search_build_files(client),          disabled=no_perm("repo"))
+    register_option("Search for Actions files",        lambda: search_actions_files(client),        disabled=no_perm("repo"))
+    register_option("Search for manifest files",       lambda: search_manifest_files(client),       disabled=no_perm("repo"))
+    register_option("Repos without branch protection", lambda: list_unprotected_repos(client),      disabled=no_perm("repo"))
+    register_option("Security posture audit",          lambda: audit_security_posture(client),      disabled=no_perm("repo"))
+    register_option("Dependabot vulnerability alerts", lambda: list_dependabot_alerts(client),      disabled=no_perm("repo"))
+    register_option("Branch protection deep-dive",     lambda: audit_branch_protection(client),     disabled=no_perm("repo"))
+    register_option("Webhook audit",                   lambda: audit_webhooks(client),              disabled=no_perm("repo"))
+    register_option("Collaborator access audit",       lambda: audit_collaborators(client),         disabled=no_perm("repo"))
+    register_option("Deploy keys audit",               lambda: audit_deploy_keys(client),           disabled=no_perm("repo"))
+    register_option("Actions secrets audit",           lambda: audit_actions_secrets(client),       disabled=no_perm("repo"))
+    register_option("Scan repos for secrets",          lambda: scan_secrets(client, token),         disabled=no_perm("repo"))
 
     register_section("PWN")
-    register_option("Clone all repos",                 lambda: clone_all_repos(client, token))
-    register_option("Clone private to public",         lambda: clone_private_to_public(client, token))
-    register_option("Create a repo",                   lambda: create_repo(client))
-    register_option("Edit a manifest file",            lambda: edit_manifest_file(client))
-    register_option("Nuke branch protections",         lambda: nuke_a_branch(client))
-    register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client))
-    register_option("Add collaborator",                  lambda: add_collaborator(client))
+    register_option("Clone all repos",                  lambda: clone_all_repos(client, token),          disabled=no_perm("repo"))
+    register_option("Clone private to public",          lambda: clone_private_to_public(client, token),  disabled=no_perm("repo"))
+    register_option("Create a repo",                    lambda: create_repo(client),                     disabled=no_perm("repo", "public_repo"))
+    register_option("Edit a manifest file",             lambda: edit_manifest_file(client),              disabled=no_perm("repo"))
+    register_option("Nuke branch protections",          lambda: nuke_a_branch(client),                   disabled=no_perm("repo"))
+    register_option("Nuke a repo (delete permanently)", lambda: nuke_repo(client),                       disabled=no_perm("delete_repo"))
+    register_option("Add collaborator",                 lambda: add_collaborator(client),                disabled=no_perm("repo"))
 
     run_menu_loop()
 
