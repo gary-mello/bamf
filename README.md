@@ -20,6 +20,12 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Deploy keys audit** — List all deploy keys, flagging read/write keys and ones that have never been used
 - **Actions secrets audit** — Surface GitHub Actions secret names (values are never exposed) and flag secrets not rotated in over a year
 - **Scan repos for secrets** — Detect leaked secrets (API keys, tokens, credentials) across all repos using [gitleaks](https://github.com/gitleaks/gitleaks)
+- **Workflow injection scan** — Detect `${{ github.event.* }}` expressions flowing into `run:` shell steps (expression injection / RCE); severity escalates to HIGH when paired with dangerous triggers like `pull_request_target` or `issue_comment`
+- **Actions permissions audit** — Flag workflows with `permissions: write-all` or no explicit permissions declaration; escalates to CRITICAL when combined with a `pull_request_target` trigger
+- **pull_request_target scan** — Identify workflows that use `pull_request_target` + `actions/checkout` with an attacker-controlled `ref:` — a pattern that exposes base-repo secrets to fork PRs (always CRITICAL)
+- **Self-hosted runner detection** — Find repos using self-hosted runners via static workflow analysis and live runner API enumeration; online runners highlighted as active attack surface
+- **Actions pinning audit** — Flag third-party Actions using mutable tags (`@v3`, `@main`, `@latest`) instead of SHA pins — supply chain risk rated HIGH/MEDIUM/LOW by tag mutability
+- **Environment protection audit** — Check deployment environments for missing required-reviewer rules and wait timers; unprotected environments allow unapproved deployments
 
 ### PWN
 
@@ -30,6 +36,8 @@ A Python CLI tool for managing GitHub repositories via Personal Access Token (PA
 - **Nuke branch protections** — Select a repo and branch, then remove all branch protection rules
 - **Nuke a repo** — Permanently delete a repository (requires confirmation)
 - **Add collaborator** — Select a repo, enter a GitHub username, and add them as a push-level collaborator
+- **Inject test workflow** — Create a real GitHub Actions workflow in a target repo for authorized red team testing (payloads: dump runner env, list secret names, or custom command); prompts to clean up the file afterward
+- **Fork a repo** — Fork any accessible repository under the authenticated account, with optional custom name and default-branch-only flag
 
 > **Note:** Security audit features (Dependabot alerts, security posture, collaborators, webhooks, deploy keys, Actions secrets) require **admin access** to each repo. Repos where the PAT lacks sufficient permissions are silently skipped.
 
