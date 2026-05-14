@@ -56,7 +56,7 @@ from github_ops import (
 )
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 LOG_FILE = "bamf_web.log"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
@@ -92,6 +92,7 @@ OPERATIONS: list[dict[str, str]] = [
     {"section": "PWN", "name": "Add collaborator", "description": "Invite a collaborator with push-level access.", "status": "Planned"},
     {"section": "PWN", "name": "Inject test workflow (PWN)", "description": "Create an authorized test workflow payload.", "status": "CLI only"},
     {"section": "PWN", "name": "Fork a repo", "description": "Fork an accessible repository.", "status": "Planned"},
+    {"section": "CUSTOM", "name": "Custom GitHub API action", "description": "Run a custom GitHub REST API request with the active token.", "status": "Available"},
 ]
 
 OPERATION_IDS: dict[str, str] = {
@@ -124,6 +125,7 @@ OPERATION_IDS: dict[str, str] = {
     "Add collaborator": "add-collaborator",
     "Inject test workflow (PWN)": "pwn-inject-workflow",
     "Fork a repo": "fork-repo",
+    "Custom GitHub API action": "custom-github-api",
 }
 
 CLI_CAPTURE_ACTIONS = {
@@ -158,6 +160,7 @@ WEB_FORM_ACTIONS = {
     "add-collaborator",
     "pwn-inject-workflow",
     "fork-repo",
+    "custom-github-api",
 }
 WEB_ENABLED_ACTIONS = set(CLI_CAPTURE_ACTIONS) | WEB_FORM_ACTIONS
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -696,6 +699,55 @@ def run_action(
             )
             return {"action": action_id, "ok": True, "output": output}
 
+        if action_id == "custom-github-api":
+            method = str(payload.get("method", "GET")).strip().upper()
+            path = str(payload.get("path", "")).strip()
+            raw_body = str(payload.get("body", "")).strip()
+            if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+                raise HTTPException(status_code=400, detail="Method must be GET, POST, PUT, PATCH, or DELETE")
+            if not path:
+                raise HTTPException(status_code=400, detail="API path is required")
+            if path.startswith("https://api.github.com/"):
+                url = path
+            elif path.startswith("/"):
+                url = f"https://api.github.com{path}"
+            else:
+                url = f"https://api.github.com/{path}"
+
+            body_data = None
+            if raw_body:
+                try:
+                    body_data = json.loads(raw_body)
+                except json.JSONDecodeError as exc:
+                    raise HTTPException(status_code=400, detail=f"Request body is not valid JSON: {exc.msg}") from exc
+
+            response = requests.request(
+                method,
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json=body_data,
+                timeout=30,
+            )
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    rendered = json.dumps(response.json(), indent=2)
+                except ValueError:
+                    rendered = response.text
+            else:
+                rendered = response.text
+            output = (
+                f"{method} {url}\n"
+                f"Status: {response.status_code}\n"
+                f"Rate remaining: {response.headers.get('X-RateLimit-Remaining', 'unknown')}\n\n"
+                f"{rendered[:20000]}"
+            )
+            return {"action": action_id, "ok": response.ok, "output": output}
+
         if action_id == "fork-repo":
             repo_name = str(payload.get("repo", "")).strip()
             custom_name = str(payload.get("name", "")).strip()
@@ -849,7 +901,7 @@ INDEX_HTML = r"""
       line-height: 1.4;
     }
 
-    button, input, select {
+    button, input, select, textarea {
       font: inherit;
     }
 
@@ -951,7 +1003,7 @@ INDEX_HTML = r"""
       font-weight: 600;
     }
 
-    input, select {
+    input, select, textarea {
       width: 100%;
       min-height: 40px;
       border: 1px solid var(--line);
@@ -959,6 +1011,13 @@ INDEX_HTML = r"""
       padding: 8px 10px;
       background: var(--input);
       color: var(--ink);
+    }
+
+    textarea {
+      min-height: 132px;
+      resize: vertical;
+      font-family: Consolas, "Liberation Mono", monospace;
+      line-height: 1.45;
     }
 
     button {
@@ -1531,6 +1590,25 @@ INDEX_HTML = r"""
       max-height: 520px;
     }
 
+    .custom-action-form {
+      padding: 18px;
+      display: grid;
+      grid-template-columns: 150px minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .custom-action-form .wide {
+      grid-column: 1 / -1;
+    }
+
+    .custom-action-form .actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      grid-column: 1 / -1;
+    }
+
     .admin .operation-grid {
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     }
@@ -1562,6 +1640,9 @@ INDEX_HTML = r"""
       .dashboard-grid, .content-grid {
         grid-template-columns: 1fr;
       }
+      .custom-action-form {
+        grid-template-columns: 1fr;
+      }
       .metrics { justify-content: flex-start; }
       .brand {
         display: grid;
@@ -1588,7 +1669,7 @@ INDEX_HTML = r"""
         <a class="nav-link" href="#logsPanel"><span>▤</span> Live Logs</a>
         <a class="nav-link" href="#repositories"><span>⇩</span> Exports</a>
       </nav>
-      <div class="sidebar-foot">Local web UI · <span id="version">v0.3.0</span></div>
+      <div class="sidebar-foot">Local web UI · <span id="version">v0.3.1</span></div>
     </aside>
 
     <header class="app-header">
@@ -1726,8 +1807,40 @@ INDEX_HTML = r"""
           <button class="secondary active" type="button" data-section="ALL">All</button>
           <button class="secondary" type="button" data-section="RECON">RECON</button>
           <button class="secondary" type="button" data-section="PWN">PWN</button>
+          <button class="secondary" type="button" data-section="CUSTOM">CUSTOM</button>
         </div>
         <div class="operation-grid" id="operations"></div>
+      </section>
+
+      <section class="panel" id="customActionPanel">
+        <div class="card-title">
+          <div>
+            <h2>Custom Action</h2>
+            <p>Run a GitHub REST API request with the connected token.</p>
+          </div>
+          <span class="chip">GitHub API</span>
+        </div>
+        <form class="custom-action-form" id="customActionForm">
+          <label>
+            Method
+            <select id="customMethod">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </label>
+          <label>
+            API Path
+            <input id="customPath" type="text" placeholder="/user">
+          </label>
+          <button type="submit">Run Custom Action</button>
+          <label class="wide">
+            JSON Body
+            <textarea id="customBody" spellcheck="false" placeholder='{"name":"new-repo","private":true}'></textarea>
+          </label>
+        </form>
       </section>
 
       <section class="panel" id="actionOutputPanel">
@@ -1802,7 +1915,7 @@ INDEX_HTML = r"""
       token: "",
       repos: [],
       account: null,
-      app: { version: "0.3.0", operations: [] },
+      app: { version: "0.3.1", operations: [] },
       operationSection: "ALL",
       logsPaused: false,
       logTimer: null,
@@ -1845,6 +1958,10 @@ INDEX_HTML = r"""
       operations: document.querySelector("#operations"),
       operationCount: document.querySelector("#operationCount"),
       operationTabs: document.querySelectorAll("[data-section]"),
+      customActionForm: document.querySelector("#customActionForm"),
+      customMethod: document.querySelector("#customMethod"),
+      customPath: document.querySelector("#customPath"),
+      customBody: document.querySelector("#customBody"),
       actionOutput: document.querySelector("#actionOutput"),
       actionMeta: document.querySelector("#actionMeta"),
       logView: document.querySelector("#logView"),
@@ -2144,6 +2261,18 @@ INDEX_HTML = r"""
         if (!confirm(`Create/update an authorized test workflow in ${repo}?`)) return null;
         return { repo, command };
       }
+      if (actionId === "custom-github-api") {
+        const method = prompt("HTTP method:", "GET");
+        if (!method) return null;
+        const path = prompt("GitHub API path or full api.github.com URL:", "/user");
+        if (!path) return null;
+        let body = "";
+        if (!["GET", "DELETE"].includes(method.toUpperCase())) {
+          body = prompt("JSON body (optional):", "") || "";
+        }
+        if (!confirm(`${method.toUpperCase()} ${path}?`)) return null;
+        return { method, path, body };
+      }
       if (actionId === "fork-repo") {
         const repo = prompt("Repository to fork (owner/name):");
         if (!repo) return null;
@@ -2158,13 +2287,13 @@ INDEX_HTML = r"""
       return {};
     }
 
-    async function runOperation(actionId) {
+    async function runOperation(actionId, explicitPayload) {
       if (!state.token) {
         setStatus("Open settings and connect a token before running actions.", "error");
         openSettings();
         return;
       }
-      const payload = actionPayload(actionId);
+      const payload = explicitPayload === undefined ? actionPayload(actionId) : explicitPayload;
       if (payload === null) return;
 
       els.actionMeta.textContent = "running";
@@ -2294,6 +2423,18 @@ INDEX_HTML = r"""
       if (button) {
         runOperation(button.dataset.action);
       }
+    });
+    els.customActionForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const method = els.customMethod.value;
+      const path = els.customPath.value.trim();
+      const body = els.customBody.value.trim();
+      if (!path) {
+        setStatus("Enter a GitHub API path for the custom action.", "error");
+        els.customPath.focus();
+        return;
+      }
+      runOperation("custom-github-api", { method, path, body });
     });
 
     els.toggleToken.addEventListener("click", () => {
