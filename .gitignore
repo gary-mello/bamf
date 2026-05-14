@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 cloned_repos/
 .env
+build/
+dist/
+bamf_web.log

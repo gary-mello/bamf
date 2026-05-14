@@ -48,6 +48,65 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Windows EXEs
+
+Build single-file executables with:
+
+```powershell
+.\build_exe.ps1
+```
+
+The outputs are:
+
+```text
+dist\bamf-web.exe
+dist\bamf-cli.exe
+```
+
+Run the web UI without a console window:
+
+```powershell
+.\dist\bamf-web.exe
+```
+
+The browser opens automatically at:
+
+```text
+http://127.0.0.1:8000
+```
+
+Run the terminal CLI:
+
+```powershell
+.\dist\bamf-cli.exe
+```
+
+For source runs, `bamf.py` is web-first:
+
+```powershell
+python bamf.py
+python bamf.py --cli
+```
+
+## Web Frontend
+
+Run the local web UI with:
+
+```bash
+pip install -r requirements.txt
+uvicorn web_app:app --reload
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The web UI currently supports token verification and a read-only repository
+dashboard. Your GitHub token is stored in browser session storage and sent to
+the local FastAPI app as a Bearer token; the server does not persist it.
+
 ### Optional: gitleaks (for secret scanning)
 
 The **Scan repos for secrets** feature requires [gitleaks](https://github.com/gitleaks/gitleaks):
